@@ -86,7 +86,14 @@ class ThemeManager: ObservableObject {
 
     func pickRandomTheme() -> String? {
         guard !themes.isEmpty else { return nil }
-        let theme = themes.randomElement()!
+
+        // Exclude recent themes to ensure distinct selections
+        let recentSet = Set(recentThemes)
+        let availableThemes = themes.filter { !recentSet.contains($0) }
+
+        // If all themes have been used recently, fall back to full list
+        let theme = (availableThemes.isEmpty ? themes : availableThemes).randomElement()!
+
         addToRecentThemes(theme)
         lastSelectedTheme = theme
         return theme

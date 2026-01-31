@@ -11,7 +11,7 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 
 ## Features
 
-- **Random Theme** - Launch Ghostty with a random theme (⌘R)
+- **Random Theme** - Launch Ghostty with a random theme (⌘R) - automatically avoids recent themes
 - **Workstreams** - Named presets with themes, directories, commands, and more
 - **Favorites** - Star themes you like for quick access
 - **Recent Themes** - Quick access to your last 5 themes
@@ -108,7 +108,7 @@ Note: Splits are created within Ghostty, not via CLI options. Each split shares 
 
 ### Tips for Multiple Claude Sessions
 
-1. **Use distinct themes** - Pick visually different themes (e.g., one dark, one light, one colorful) so you can identify sessions at a glance
+1. **Distinct themes are automatic** - Random Theme automatically excludes your last 5 themes, so each new session looks different
 2. **Set window titles** - Include the project name in the title for easy switching
 3. **Use the command field** - Set `claude` to auto-start Claude Code when the terminal opens
 4. **Organize by project** - Create one workstream per project with its directory pre-configured
