@@ -1,13 +1,19 @@
 import SwiftUI
+import Carbon
 
 @main
 struct GhosttyThemePickerApp: App {
     @StateObject private var themeManager = ThemeManager()
     @State private var showingWorkstreams = false
+    @StateObject private var hotkeyManager = HotkeyManager()
 
     var body: some Scene {
         MenuBarExtra {
             MenuContent(themeManager: themeManager, showingWorkstreams: $showingWorkstreams)
+                .onAppear {
+                    hotkeyManager.themeManager = themeManager
+                    hotkeyManager.registerHotkey()
+                }
         } label: {
             Label("Ghostty Theme Picker", systemImage: "terminal")
         }
@@ -16,6 +22,280 @@ struct GhosttyThemePickerApp: App {
             SettingsView(themeManager: themeManager)
         }
         .windowResizability(.contentSize)
+
+        Window("Quick Launch", id: "quicklaunch") {
+            QuickLaunchView(themeManager: themeManager)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+    }
+}
+
+// MARK: - Hotkey Manager (Carbon-based)
+
+class HotkeyManager: ObservableObject {
+    var themeManager: ThemeManager?
+    private var hotkeyRef: EventHotKeyRef?
+    private static var instance: HotkeyManager?
+
+    func registerHotkey() {
+        HotkeyManager.instance = self
+
+        // Register Control+Option+G using Carbon API
+        var hotKeyID = EventHotKeyID()
+        hotKeyID.signature = OSType(0x4754504B) // "GTPK" - GhosttyThemePickerKey
+        hotKeyID.id = 1
+
+        // G = keycode 5, Control+Option = controlKey + optionKey
+        let modifiers: UInt32 = UInt32(controlKey | optionKey)
+
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+
+        InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
+            HotkeyManager.instance?.handleHotkey()
+            return noErr
+        }, 1, &eventType, nil, nil)
+
+        let status = RegisterEventHotKey(5, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotkeyRef)
+
+        if status == noErr {
+            print("Global hotkey registered: ⌃⌥G (Carbon)")
+        } else {
+            print("Failed to register hotkey: \(status)")
+        }
+    }
+
+    private func handleHotkey() {
+        DispatchQueue.main.async {
+            QuickLaunchPanel.shared.show(themeManager: self.themeManager)
+        }
+    }
+
+    deinit {
+        if let ref = hotkeyRef {
+            UnregisterEventHotKey(ref)
+        }
+    }
+}
+
+// MARK: - Quick Launch Panel
+
+class QuickLaunchPanel {
+    static let shared = QuickLaunchPanel()
+    private var panel: NSPanel?
+    private var themeManager: ThemeManager?
+
+    func show(themeManager: ThemeManager?) {
+        self.themeManager = themeManager
+
+        if let existing = panel {
+            existing.close()
+        }
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 400),
+            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isReleasedWhenClosed = false
+        panel.backgroundColor = NSColor.windowBackgroundColor
+
+        let view = QuickLaunchView(themeManager: themeManager ?? ThemeManager()) {
+            panel.close()
+        }
+
+        panel.contentView = NSHostingView(rootView: view)
+        panel.center()
+
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        self.panel = panel
+    }
+
+    func close() {
+        panel?.close()
+        panel = nil
+    }
+}
+
+// MARK: - Quick Launch View
+
+struct QuickLaunchView: View {
+    @ObservedObject var themeManager: ThemeManager
+    var onDismiss: (() -> Void)?
+
+    init(themeManager: ThemeManager, onDismiss: (() -> Void)? = nil) {
+        self.themeManager = themeManager
+        self.onDismiss = onDismiss
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Image(systemName: "terminal.fill")
+                    .foregroundColor(.accentColor)
+                Text("Quick Launch")
+                    .font(.headline)
+                Spacer()
+                Text("⌃⌥G")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    // Random Theme
+                    Button {
+                        if let theme = themeManager.pickRandomTheme() {
+                            themeManager.launchGhostty(withTheme: theme)
+                        }
+                        onDismiss?()
+                    } label: {
+                        HStack {
+                            Image(systemName: "dice")
+                                .frame(width: 24)
+                            Text("Random Theme")
+                            Spacer()
+                            Text("New window with random theme")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+
+                    // Workstreams
+                    if !themeManager.workstreams.isEmpty {
+                        Text("WORKSTREAMS")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.top, 8)
+
+                        ForEach(themeManager.workstreams) { workstream in
+                            Button {
+                                themeManager.launchWorkstream(workstream)
+                                onDismiss?()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "folder")
+                                        .frame(width: 24)
+                                    VStack(alignment: .leading) {
+                                        Text(workstream.name)
+                                        if let dir = workstream.directory {
+                                            Text(dir)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    Spacer()
+                                    Text(workstream.theme)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                                .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    // Favorites
+                    if !themeManager.favoriteThemes.isEmpty {
+                        Text("FAVORITES")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.top, 8)
+
+                        ForEach(themeManager.favoriteThemes, id: \.self) { theme in
+                            Button {
+                                themeManager.launchGhostty(withTheme: theme)
+                                onDismiss?()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "star.fill")
+                                        .foregroundColor(.yellow)
+                                        .frame(width: 24)
+                                    Text(theme)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                                .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    // Recent
+                    if !themeManager.recentThemes.isEmpty {
+                        Text("RECENT")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.top, 8)
+
+                        ForEach(themeManager.recentThemes, id: \.self) { theme in
+                            Button {
+                                themeManager.launchGhostty(withTheme: theme)
+                                onDismiss?()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "clock")
+                                        .frame(width: 24)
+                                    Text(theme)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                                .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding()
+            }
+
+            Divider()
+
+            // Footer
+            HStack {
+                Text("Press Esc to close")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding(8)
+        }
+        .frame(width: 320, height: 400)
+        .onExitCommand {
+            onDismiss?()
+        }
     }
 }
 

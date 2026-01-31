@@ -11,6 +11,7 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 
 ## Features
 
+- **Global Hotkey** - Press ⌃⌥G from anywhere to open Quick Launch panel
 - **Random Theme** - Launch Ghostty with a random theme (⌘R) - automatically avoids recent themes
 - **Workstreams** - Named presets with themes, directories, commands, and more
 - **Favorites** - Star themes you like for quick access
@@ -22,6 +23,17 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 ### Quick Start
 
 Click the terminal icon in your menu bar and select **Random Theme** to launch Ghostty with a random theme. Each click gives you a different theme.
+
+### Global Hotkey (⌃⌥G)
+
+Press **Control + Option + G** from anywhere to instantly open the Quick Launch panel:
+
+- **Random Theme** - Launch with a random theme
+- **Workstreams** - Your saved presets with themes and directories
+- **Favorites** - Your starred themes
+- **Recent** - Recently used themes
+
+Select an option to launch Ghostty, or press **Esc** to close. No need to click the menu bar!
 
 ### Workstreams
 
@@ -73,7 +85,8 @@ Star themes you like for quick access:
 
 | Shortcut | Action |
 |----------|--------|
-| ⌘R | Launch with random theme |
+| ⌃⌥G | Open Quick Launch panel (global - works from any app) |
+| ⌘R | Launch with random theme (from menu) |
 | ⌘, | Manage Workstreams |
 | ⌘Q | Quit |
 
