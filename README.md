@@ -19,6 +19,23 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 2. Open the DMG and drag `GhosttyThemePicker.app` to Applications
 3. Launch from Applications or Spotlight
 
+### Opening an Unsigned App
+
+This app is not signed with an Apple Developer certificate. macOS will block it by default. To open it:
+
+**Option 1: Right-click to Open**
+1. Right-click (or Control-click) on `GhosttyThemePicker.app`
+2. Select "Open" from the context menu
+3. Click "Open" in the dialog that appears
+
+**Option 2: System Settings**
+1. Try to open the app normally (it will be blocked)
+2. Go to **System Settings → Privacy & Security**
+3. Scroll down to find the message about GhosttyThemePicker being blocked
+4. Click "Open Anyway"
+
+You only need to do this once. After that, the app will open normally.
+
 ## Requirements
 
 - macOS 13 or later
