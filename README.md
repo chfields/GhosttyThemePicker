@@ -4,7 +4,10 @@ A simple macOS menu bar app that launches [Ghostty](https://ghostty.org) with a 
 
 A great way to run multiple [Claude Code](https://github.com/anthropics/claude-code) sessions with different themes to help you visually track your different workstreams.
 
-![Menu Bar](https://img.shields.io/badge/macOS-13%2B-blue)
+[![Build](https://github.com/chfields/GhosttyThemePicker/actions/workflows/build.yml/badge.svg)](https://github.com/chfields/GhosttyThemePicker/actions/workflows/build.yml)
+[![CodeQL](https://github.com/chfields/GhosttyThemePicker/actions/workflows/codeql.yml/badge.svg)](https://github.com/chfields/GhosttyThemePicker/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
 
 ## Features
 
@@ -56,6 +59,10 @@ The built app will be in `~/Library/Developer/Xcode/DerivedData/GhosttyThemePick
 1. Fetches available themes via `ghostty +list-themes`
 2. Picks a random theme when you click "Random Theme"
 3. Launches Ghostty with `--theme=<selected-theme>`
+
+## Security
+
+This app is open source and scanned with CodeQL. See [SECURITY.md](SECURITY.md) for details on what the app does and doesn't do.
 
 ## License
 

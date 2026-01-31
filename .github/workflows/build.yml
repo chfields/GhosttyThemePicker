@@ -1,0 +1,25 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Build
+      run: xcodebuild -scheme GhosttyThemePicker -configuration Release build
+
+    - name: Verify app bundle
+      run: |
+        APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "GhosttyThemePicker.app" -type d | head -1)
+        echo "Built app at: $APP_PATH"
+        ls -la "$APP_PATH/Contents/"
+        ls -la "$APP_PATH/Contents/Resources/"
