@@ -7,8 +7,11 @@ Ghostty Theme Picker is a simple, open-source macOS menu bar app. The entire cod
 ### What This App Does
 
 - Runs `ghostty +list-themes` to get available themes
-- Runs `ghostty --theme=<name>` to launch Ghostty with a theme
-- Stores recent theme names in UserDefaults (local preferences)
+- Runs `ghostty` with CLI arguments to launch with a theme, directory, etc.
+- Stores preferences in UserDefaults (local to your Mac):
+  - Recent themes
+  - Favorite themes
+  - Workstream configurations (name, theme, directory, command, etc.)
 
 ### What This App Does NOT Do
 

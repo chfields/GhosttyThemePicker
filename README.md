@@ -12,9 +12,91 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 ## Features
 
 - **Random Theme** - Launch Ghostty with a random theme (⌘R)
+- **Workstreams** - Named presets with themes, directories, commands, and more
+- **Favorites** - Star themes you like for quick access
 - **Recent Themes** - Quick access to your last 5 themes
-- **Theme Count** - Shows how many themes are available
 - **Menu Bar Only** - Lives in your menu bar, no Dock icon
+
+## Usage
+
+### Quick Start
+
+Click the terminal icon in your menu bar and select **Random Theme** to launch Ghostty with a random theme. Each click gives you a different theme.
+
+### Workstreams
+
+Workstreams are saved presets for different projects or tasks. Perfect for running multiple Claude Code sessions with distinct visual identities.
+
+**To create a workstream:**
+1. Click the menu bar icon → **Manage Workstreams...**
+2. Click **Add Workstream**
+3. Configure your workstream:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Name** | Display name in the menu | `Backend API` |
+| **Theme** | Ghostty theme to use | `Dracula` |
+| **Working Directory** | Start in this folder | `/Users/me/projects/api` |
+| **Window Title** | Custom window title | `Claude - Backend` |
+| **Command to Run** | Command to execute on launch | `claude` |
+| **Extra Ghostty Options** | Additional CLI flags | `--font-size=14` |
+
+**Example workstream setups:**
+
+```
+Name: Claude - Backend
+Theme: Dracula
+Directory: ~/projects/backend
+Command: claude
+Title: Claude Backend
+
+Name: Claude - Frontend
+Theme: Solarized Light
+Directory: ~/projects/frontend
+Command: claude
+Title: Claude Frontend
+
+Name: Quick Terminal
+Theme: Tokyo Night
+Directory: ~
+Command: (empty - uses default shell)
+```
+
+### Favorites
+
+Star themes you like for quick access:
+- After launching with a random theme, the theme name appears at the bottom of the menu
+- Open **Recent** submenu and click **Add to Favorites** to save it
+- Favorited themes appear in the **Favorites** submenu
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| ⌘R | Launch with random theme |
+| ⌘, | Manage Workstreams |
+| ⌘Q | Quit |
+
+### Extra Ghostty Options
+
+The **Extra Ghostty Options** field accepts any valid Ghostty CLI flags. Some useful ones:
+
+```bash
+--font-size=14              # Set font size
+--window-padding-x=10       # Horizontal padding
+--window-padding-y=10       # Vertical padding
+--background-opacity=0.95   # Transparent background
+--cursor-style=block        # Cursor style (block, bar, underline)
+```
+
+See [Ghostty documentation](https://ghostty.org/docs) for all available options.
+
+### Tips for Multiple Claude Sessions
+
+1. **Use distinct themes** - Pick visually different themes (e.g., one dark, one light, one colorful) so you can identify sessions at a glance
+2. **Set window titles** - Include the project name in the title for easy switching
+3. **Use the command field** - Set `claude` to auto-start Claude Code when the terminal opens
+4. **Organize by project** - Create one workstream per project with its directory pre-configured
 
 ## Installation
 
@@ -56,9 +138,12 @@ The built app will be in `~/Library/Developer/Xcode/DerivedData/GhosttyThemePick
 
 ## How It Works
 
-1. Fetches available themes via `ghostty +list-themes`
-2. Picks a random theme when you click "Random Theme"
-3. Launches Ghostty with `--theme=<selected-theme>`
+1. On launch, fetches available themes via `ghostty +list-themes`
+2. Themes, workstreams, and favorites are stored in macOS UserDefaults
+3. When launching Ghostty, passes CLI arguments like:
+   ```bash
+   ghostty --theme=Dracula --working-directory=/path/to/project --title="My Terminal" -e claude
+   ```
 
 ## Security
 
