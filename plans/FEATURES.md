@@ -14,6 +14,7 @@
 | Global Hotkey | ⌃⌥G opens Quick Launch panel from anywhere | ✅ Done |
 | Theme Preview | Color swatches in Quick Launch panel and theme picker (with tooltips) | ✅ Done |
 | Auto-launch | Configured workstreams open automatically on app startup | ✅ Done |
+| Theme Categories | Filter themes by Dark/Light in theme picker | ✅ Done |
 | Window Switching | List and switch between Ghostty windows | ⏸️ Paused (needs code signing) |
 
 ## Not Yet Implemented
@@ -28,7 +29,6 @@
 
 | Feature | Description | Complexity |
 |---------|-------------|------------|
-| Theme Categories | Filter by dark/light/colorful/muted | Medium |
 | Exclude List | Hide specific themes from random rotation | Easy |
 
 ### Low Priority / Future

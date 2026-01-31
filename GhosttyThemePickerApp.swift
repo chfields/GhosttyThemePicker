@@ -594,12 +594,33 @@ struct WorkstreamEditorView: View {
     @State private var extraArgs: String = ""
     @State private var autoLaunch: Bool = false
     @State private var themeSearchText: String = ""
+    @State private var themeCategory: ThemeCategory = .all
+
+    enum ThemeCategory: String, CaseIterable {
+        case all = "All"
+        case dark = "Dark"
+        case light = "Light"
+    }
 
     var filteredThemes: [String] {
-        if themeSearchText.isEmpty {
-            return themeManager.themes
+        var themes = themeManager.themes
+
+        // Filter by category
+        switch themeCategory {
+        case .all:
+            break
+        case .dark:
+            themes = themes.filter { themeManager.isDarkTheme($0) }
+        case .light:
+            themes = themes.filter { !themeManager.isDarkTheme($0) }
         }
-        return themeManager.themes.filter { $0.localizedCaseInsensitiveContains(themeSearchText) }
+
+        // Filter by search text
+        if !themeSearchText.isEmpty {
+            themes = themes.filter { $0.localizedCaseInsensitiveContains(themeSearchText) }
+        }
+
+        return themes
     }
 
     var isValid: Bool {
@@ -628,8 +649,23 @@ struct WorkstreamEditorView: View {
                         Text("Theme")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        TextField("Search themes...", text: $themeSearchText)
-                            .textFieldStyle(.roundedBorder)
+
+                        HStack {
+                            TextField("Search themes...", text: $themeSearchText)
+                                .textFieldStyle(.roundedBorder)
+
+                            Picker("", selection: $themeCategory) {
+                                ForEach(ThemeCategory.allCases, id: \.self) { category in
+                                    Text(category.rawValue).tag(category)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 150)
+                        }
+
+                        Text("\(filteredThemes.count) themes")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
 
                         List(filteredThemes.prefix(100), id: \.self, selection: $selectedTheme) { theme in
                             HStack {
