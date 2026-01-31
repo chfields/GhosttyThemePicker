@@ -21,7 +21,7 @@
 
 ## Not Yet Implemented
 
-### Low Priority / Future
+### On Hold
 
 | Feature | Description | Complexity |
 |---------|-------------|------------|

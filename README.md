@@ -98,7 +98,7 @@ Hide themes you don't want from random rotation:
 
 Share your workstream configurations:
 - Open **Manage Workstreams** (⌘,)
-- Click **Export...** to save all workstreams to a JSON file
+- Click **Export...** to select which workstreams to save to a JSON file
 - Click **Import...** to load workstreams from a JSON file
 - Imported workstreams are added to your existing list
 

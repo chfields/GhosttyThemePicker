@@ -329,10 +329,11 @@ class ThemeManager: ObservableObject {
         }
     }
 
-    func exportWorkstreams() -> Data? {
+    func exportWorkstreams(_ selected: [Workstream]? = nil) -> Data? {
+        let toExport = selected ?? workstreams
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return try? encoder.encode(workstreams)
+        return try? encoder.encode(toExport)
     }
 
     func importWorkstreams(from data: Data, replace: Bool = false) -> Int {

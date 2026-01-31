@@ -526,7 +526,9 @@ struct MenuContent: View {
 struct SettingsView: View {
     @ObservedObject var themeManager: ThemeManager
     @State private var showingAddSheet = false
+    @State private var showingExportSheet = false
     @State private var editingWorkstream: Workstream?
+    @State private var selectedForExport: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -597,7 +599,8 @@ struct SettingsView: View {
                 }
 
                 Button {
-                    exportWorkstreams()
+                    selectedForExport = Set(themeManager.workstreams.map { $0.id })
+                    showingExportSheet = true
                 } label: {
                     HStack {
                         Image(systemName: "square.and.arrow.up")
@@ -630,18 +633,13 @@ struct SettingsView: View {
                 editingWorkstream = nil
             }
         }
-    }
-
-    private func exportWorkstreams() {
-        guard let data = themeManager.exportWorkstreams() else { return }
-
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "workstreams.json"
-        panel.title = "Export Workstreams"
-
-        if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
+        .sheet(isPresented: $showingExportSheet) {
+            ExportWorkstreamsView(
+                themeManager: themeManager,
+                selectedForExport: $selectedForExport
+            ) {
+                showingExportSheet = false
+            }
         }
     }
 
@@ -658,6 +656,94 @@ struct SettingsView: View {
                     // Show brief confirmation - workstreams will appear in list
                 }
             }
+        }
+    }
+}
+
+// MARK: - Export Workstreams View
+
+struct ExportWorkstreamsView: View {
+    @ObservedObject var themeManager: ThemeManager
+    @Binding var selectedForExport: Set<UUID>
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Export Workstreams")
+                .font(.headline)
+
+            Text("Select which workstreams to export:")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            List {
+                ForEach(themeManager.workstreams) { workstream in
+                    HStack {
+                        Toggle("", isOn: Binding(
+                            get: { selectedForExport.contains(workstream.id) },
+                            set: { isSelected in
+                                if isSelected {
+                                    selectedForExport.insert(workstream.id)
+                                } else {
+                                    selectedForExport.remove(workstream.id)
+                                }
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+
+                        ThemeSwatchView(colors: themeManager.getThemeColors(workstream.theme), size: 14)
+
+                        VStack(alignment: .leading) {
+                            Text(workstream.name)
+                                .fontWeight(.medium)
+                            Text(workstream.theme)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: 150)
+
+            HStack {
+                Button("Select All") {
+                    selectedForExport = Set(themeManager.workstreams.map { $0.id })
+                }
+
+                Button("Select None") {
+                    selectedForExport.removeAll()
+                }
+
+                Spacer()
+
+                Button("Cancel") {
+                    onDismiss()
+                }
+                .keyboardShortcut(.escape)
+
+                Button("Export...") {
+                    exportSelected()
+                }
+                .keyboardShortcut(.return)
+                .disabled(selectedForExport.isEmpty)
+            }
+        }
+        .padding()
+        .frame(width: 400, height: 350)
+    }
+
+    private func exportSelected() {
+        let selected = themeManager.workstreams.filter { selectedForExport.contains($0.id) }
+        guard let data = themeManager.exportWorkstreams(selected) else { return }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "workstreams.json"
+        panel.title = "Export Workstreams"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            try? data.write(to: url)
+            onDismiss()
         }
     }
 }
