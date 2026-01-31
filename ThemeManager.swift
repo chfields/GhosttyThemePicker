@@ -38,17 +38,20 @@ class ThemeManager: ObservableObject {
     @Published var themes: [String] = []
     @Published var recentThemes: [String] = []
     @Published var favoriteThemes: [String] = []
+    @Published var excludedThemes: [String] = []
     @Published var workstreams: [Workstream] = []
     @Published var lastSelectedTheme: String?
 
     private let maxRecentThemes = 5
     private let recentThemesKey = "RecentThemes"
     private let favoriteThemesKey = "FavoriteThemes"
+    private let excludedThemesKey = "ExcludedThemes"
     private let workstreamsKey = "Workstreams"
 
     init() {
         loadRecentThemes()
         loadFavoriteThemes()
+        loadExcludedThemes()
         loadWorkstreams()
         fetchThemes()
     }
@@ -103,12 +106,16 @@ class ThemeManager: ObservableObject {
     func pickRandomTheme() -> String? {
         guard !themes.isEmpty else { return nil }
 
-        // Exclude recent themes to ensure distinct selections
+        // Exclude recent themes and excluded themes
         let recentSet = Set(recentThemes)
-        let availableThemes = themes.filter { !recentSet.contains($0) }
+        let excludedSet = Set(excludedThemes)
+        let availableThemes = themes.filter { !recentSet.contains($0) && !excludedSet.contains($0) }
 
-        // If all themes have been used recently, fall back to full list
-        let theme = (availableThemes.isEmpty ? themes : availableThemes).randomElement()!
+        // If all themes have been used recently or excluded, fall back to non-excluded only
+        let fallbackThemes = themes.filter { !excludedSet.contains($0) }
+        let themesToChooseFrom = availableThemes.isEmpty ? fallbackThemes : availableThemes
+
+        guard let theme = themesToChooseFrom.randomElement() else { return nil }
 
         addToRecentThemes(theme)
         lastSelectedTheme = theme
@@ -231,6 +238,47 @@ class ThemeManager: ObservableObject {
 
     private func saveFavoriteThemes() {
         UserDefaults.standard.set(favoriteThemes, forKey: favoriteThemesKey)
+    }
+
+    // MARK: - Excluded Themes
+
+    func isExcluded(_ theme: String) -> Bool {
+        excludedThemes.contains(theme)
+    }
+
+    func toggleExcluded(_ theme: String) {
+        if isExcluded(theme) {
+            excludedThemes.removeAll { $0 == theme }
+        } else {
+            excludedThemes.append(theme)
+        }
+        saveExcludedThemes()
+    }
+
+    func excludeTheme(_ theme: String) {
+        guard !isExcluded(theme) else { return }
+        excludedThemes.append(theme)
+        saveExcludedThemes()
+    }
+
+    func includeTheme(_ theme: String) {
+        excludedThemes.removeAll { $0 == theme }
+        saveExcludedThemes()
+    }
+
+    func clearExcludedThemes() {
+        excludedThemes.removeAll()
+        saveExcludedThemes()
+    }
+
+    private func loadExcludedThemes() {
+        if let saved = UserDefaults.standard.stringArray(forKey: excludedThemesKey) {
+            excludedThemes = saved
+        }
+    }
+
+    private func saveExcludedThemes() {
+        UserDefaults.standard.set(excludedThemes, forKey: excludedThemesKey)
     }
 
     // MARK: - Workstreams

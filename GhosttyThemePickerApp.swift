@@ -444,6 +444,39 @@ struct MenuContent: View {
                             Label("Add to Favorites", systemImage: "star")
                         }
                     }
+
+                    Button {
+                        themeManager.toggleExcluded(lastTheme)
+                    } label: {
+                        if themeManager.isExcluded(lastTheme) {
+                            Label("Include '\(lastTheme)' in Random", systemImage: "arrow.uturn.backward")
+                        } else {
+                            Label("Exclude '\(lastTheme)' from Random", systemImage: "eye.slash")
+                        }
+                    }
+                }
+            }
+
+            Divider()
+        }
+
+        // Excluded Themes Section
+        if !themeManager.excludedThemes.isEmpty {
+            Menu("Excluded (\(themeManager.excludedThemes.count))") {
+                ForEach(themeManager.excludedThemes, id: \.self) { theme in
+                    Button {
+                        themeManager.includeTheme(theme)
+                    } label: {
+                        Label(theme, systemImage: "arrow.uturn.backward")
+                    }
+                }
+
+                Divider()
+
+                Button {
+                    themeManager.clearExcludedThemes()
+                } label: {
+                    Label("Clear All Excluded", systemImage: "trash")
                 }
             }
 
@@ -451,7 +484,8 @@ struct MenuContent: View {
         }
 
         // Theme count
-        Text("\(themeManager.themes.count) themes available")
+        let availableCount = themeManager.themes.count - themeManager.excludedThemes.count
+        Text("\(availableCount) themes available")
             .font(.caption)
             .foregroundColor(.secondary)
 

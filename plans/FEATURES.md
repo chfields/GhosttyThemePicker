@@ -15,6 +15,7 @@
 | Theme Preview | Color swatches in Quick Launch panel and theme picker (with tooltips) | ✅ Done |
 | Auto-launch | Configured workstreams open automatically on app startup | ✅ Done |
 | Theme Categories | Filter themes by Dark/Light in theme picker | ✅ Done |
+| Exclude List | Hide themes from random rotation | ✅ Done |
 | Window Switching | List and switch between Ghostty windows | ⏸️ Paused (needs code signing) |
 
 ## Not Yet Implemented
@@ -24,12 +25,6 @@
 | Feature | Description | Complexity |
 |---------|-------------|------------|
 | Copy Theme Name | Copy current theme to clipboard | Easy |
-
-### Medium Priority
-
-| Feature | Description | Complexity |
-|---------|-------------|------------|
-| Exclude List | Hide specific themes from random rotation | Easy |
 
 ### Low Priority / Future
 

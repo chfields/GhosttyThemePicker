@@ -17,6 +17,7 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 - **Auto-launch** - Automatically open configured workstreams when the app starts
 - **Theme Preview** - Color swatches show theme colors before launching
 - **Favorites** - Star themes you like for quick access
+- **Exclude List** - Hide themes you don't like from random rotation
 - **Recent Themes** - Quick access to your last 5 themes
 - **Menu Bar Only** - Lives in your menu bar, no Dock icon
 
@@ -83,6 +84,14 @@ Star themes you like for quick access:
 - After launching with a random theme, the theme name appears at the bottom of the menu
 - Open **Recent** submenu and click **Add to Favorites** to save it
 - Favorited themes appear in the **Favorites** submenu
+
+### Exclude List
+
+Hide themes you don't want from random rotation:
+- Open **Recent** submenu and click **Exclude '[theme]' from Random**
+- Excluded themes will never appear when using Random Theme
+- View excluded themes in the **Excluded** submenu
+- Click any excluded theme to re-include it, or **Clear All Excluded** to reset
 
 ### Keyboard Shortcuts
 
