@@ -91,12 +91,28 @@ The **Extra Ghostty Options** field accepts any valid Ghostty CLI flags. Some us
 
 See [Ghostty documentation](https://ghostty.org/docs) for all available options.
 
+### Creating Splits
+
+Once Ghostty is open, you can create splits using these keybindings:
+
+| Shortcut | Action |
+|----------|--------|
+| ⌘D | Split right (vertical) |
+| ⌘⇧D | Split down (horizontal) |
+| ⌘⇧Enter | Toggle zoom on current split |
+| ⌘] | Focus next split |
+| ⌘[ | Focus previous split |
+| ⌘W | Close current split |
+
+Note: Splits are created within Ghostty, not via CLI options. Each split shares the same theme as the window.
+
 ### Tips for Multiple Claude Sessions
 
 1. **Use distinct themes** - Pick visually different themes (e.g., one dark, one light, one colorful) so you can identify sessions at a glance
 2. **Set window titles** - Include the project name in the title for easy switching
 3. **Use the command field** - Set `claude` to auto-start Claude Code when the terminal opens
 4. **Organize by project** - Create one workstream per project with its directory pre-configured
+5. **Use splits for related work** - Within a single themed window, use ⌘D to split for related tasks (e.g., running tests while coding)
 
 ## Installation
 
