@@ -13,7 +13,9 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 
 - **Global Hotkey** - Press ⌃⌥G from anywhere to open Quick Launch panel
 - **Random Theme** - Launch Ghostty with a random theme (⌘R) - automatically avoids recent themes
-- **Workstreams** - Named presets with themes, directories, commands, and more
+- **Workstreams** - Named presets with themes, directories, commands, and auto-launch
+- **Auto-launch** - Automatically open configured workstreams when the app starts
+- **Theme Preview** - Color swatches show theme colors before launching
 - **Favorites** - Star themes you like for quick access
 - **Recent Themes** - Quick access to your last 5 themes
 - **Menu Bar Only** - Lives in your menu bar, no Dock icon
@@ -52,6 +54,7 @@ Workstreams are saved presets for different projects or tasks. Perfect for runni
 | **Window Title** | Custom window title | `Claude - Backend` |
 | **Command to Run** | Command to execute on launch | `claude` |
 | **Extra Ghostty Options** | Additional CLI flags | `--font-size=14` |
+| **Auto-launch** | Open this workstream when app starts | Toggle on/off |
 
 **Example workstream setups:**
 
@@ -126,6 +129,7 @@ Note: Splits are created within Ghostty, not via CLI options. Each split shares 
 3. **Use the command field** - Set `claude` to auto-start Claude Code when the terminal opens
 4. **Organize by project** - Create one workstream per project with its directory pre-configured
 5. **Use splits for related work** - Within a single themed window, use ⌘D to split for related tasks (e.g., running tests while coding)
+6. **Auto-launch your daily setup** - Enable auto-launch on your most-used workstreams to open them automatically when the app starts
 
 ## Installation
 

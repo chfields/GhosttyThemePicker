@@ -25,6 +25,7 @@ struct Workstream: Codable, Identifiable, Equatable {
     var windowTitle: String?
     var command: String?
     var extraArgs: String?  // Additional Ghostty args like --font-size=14
+    var autoLaunch: Bool = false  // Launch this workstream when app starts
 
     static func == (lhs: Workstream, rhs: Workstream) -> Bool {
         lhs.id == rhs.id
@@ -234,14 +235,15 @@ class ThemeManager: ObservableObject {
 
     // MARK: - Workstreams
 
-    func addWorkstream(name: String, theme: String, directory: String?, windowTitle: String? = nil, command: String? = nil, extraArgs: String? = nil) {
+    func addWorkstream(name: String, theme: String, directory: String?, windowTitle: String? = nil, command: String? = nil, autoLaunch: Bool = false, extraArgs: String? = nil) {
         let workstream = Workstream(
             name: name,
             theme: theme,
             directory: directory,
             windowTitle: windowTitle,
             command: command,
-            extraArgs: extraArgs
+            extraArgs: extraArgs,
+            autoLaunch: autoLaunch
         )
         workstreams.append(workstream)
         saveWorkstreams()
@@ -257,6 +259,13 @@ class ThemeManager: ObservableObject {
     func deleteWorkstream(_ workstream: Workstream) {
         workstreams.removeAll { $0.id == workstream.id }
         saveWorkstreams()
+    }
+
+    func launchAutoStartWorkstreams() {
+        let autoLaunchWorkstreams = workstreams.filter { $0.autoLaunch }
+        for workstream in autoLaunchWorkstreams {
+            launchWorkstream(workstream)
+        }
     }
 
     private func loadWorkstreams() {

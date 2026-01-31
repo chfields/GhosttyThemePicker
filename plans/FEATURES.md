@@ -13,6 +13,7 @@
 | Menu Bar Only | No dock icon (LSUIElement) | ✅ Done |
 | Global Hotkey | ⌃⌥G opens Quick Launch panel from anywhere | ✅ Done |
 | Theme Preview | Color swatches in Quick Launch panel and theme picker (with tooltips) | ✅ Done |
+| Auto-launch | Configured workstreams open automatically on app startup | ✅ Done |
 | Window Switching | List and switch between Ghostty windows | ⏸️ Paused (needs code signing) |
 
 ## Not Yet Implemented
@@ -34,7 +35,6 @@
 
 | Feature | Description | Complexity |
 |---------|-------------|------------|
-| Auto-launch | Open X terminals with distinct themes on startup | Medium |
 | Theme Search | Search all themes in menu | Easy |
 | Import/Export | Share workstream configurations | Easy |
 | Sync | iCloud sync for workstreams/favorites | Hard |

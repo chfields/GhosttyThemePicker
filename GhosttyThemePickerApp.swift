@@ -5,6 +5,7 @@ import Carbon
 struct GhosttyThemePickerApp: App {
     @StateObject private var themeManager = ThemeManager()
     @State private var showingWorkstreams = false
+    @State private var hasLaunchedAutoStart = false
     @StateObject private var hotkeyManager = HotkeyManager()
 
     var body: some Scene {
@@ -13,6 +14,14 @@ struct GhosttyThemePickerApp: App {
                 .onAppear {
                     hotkeyManager.themeManager = themeManager
                     hotkeyManager.registerHotkey()
+
+                    // Launch auto-start workstreams on first appearance
+                    if !hasLaunchedAutoStart {
+                        hasLaunchedAutoStart = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            themeManager.launchAutoStartWorkstreams()
+                        }
+                    }
                 }
         } label: {
             Label("Ghostty Theme Picker", systemImage: "terminal")
@@ -497,6 +506,11 @@ struct SettingsView: View {
             List {
                 ForEach(themeManager.workstreams) { workstream in
                     HStack {
+                        if workstream.autoLaunch {
+                            Image(systemName: "play.circle.fill")
+                                .foregroundColor(.green)
+                                .help("Auto-launches on startup")
+                        }
                         VStack(alignment: .leading) {
                             Text(workstream.name)
                                 .fontWeight(.medium)
@@ -578,6 +592,7 @@ struct WorkstreamEditorView: View {
     @State private var windowTitle: String = ""
     @State private var command: String = ""
     @State private var extraArgs: String = ""
+    @State private var autoLaunch: Bool = false
     @State private var themeSearchText: String = ""
 
     var filteredThemes: [String] {
@@ -682,6 +697,17 @@ struct WorkstreamEditorView: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
+
+                    // Auto-launch
+                    Divider()
+                    Toggle(isOn: $autoLaunch) {
+                        VStack(alignment: .leading) {
+                            Text("Auto-launch on startup")
+                            Text("Open this workstream when the app starts")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
             }
 
@@ -714,6 +740,7 @@ struct WorkstreamEditorView: View {
                 windowTitle = ws.windowTitle ?? ""
                 command = ws.command ?? ""
                 extraArgs = ws.extraArgs ?? ""
+                autoLaunch = ws.autoLaunch
             }
         }
     }
@@ -744,6 +771,7 @@ struct WorkstreamEditorView: View {
             updated.windowTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
             updated.command = trimmedCmd.isEmpty ? nil : trimmedCmd
             updated.extraArgs = trimmedArgs.isEmpty ? nil : trimmedArgs
+            updated.autoLaunch = autoLaunch
             themeManager.updateWorkstream(updated)
         } else {
             themeManager.addWorkstream(
@@ -752,6 +780,7 @@ struct WorkstreamEditorView: View {
                 directory: trimmedDir.isEmpty ? nil : trimmedDir,
                 windowTitle: trimmedTitle.isEmpty ? nil : trimmedTitle,
                 command: trimmedCmd.isEmpty ? nil : trimmedCmd,
+                autoLaunch: autoLaunch,
                 extraArgs: trimmedArgs.isEmpty ? nil : trimmedArgs
             )
         }
