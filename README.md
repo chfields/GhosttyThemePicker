@@ -25,7 +25,7 @@ A simple macOS menu bar app that launches [Ghostty](https://ghostty.org) with a 
 ## Building from Source
 
 ```bash
-git clone https://github.com/yourusername/GhosttyThemePicker.git
+git clone https://github.com/chfields/GhosttyThemePicker.git
 cd GhosttyThemePicker
 xcodebuild -scheme GhosttyThemePicker -configuration Release build
 ```
