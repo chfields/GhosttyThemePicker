@@ -16,22 +16,15 @@
 | Auto-launch | Configured workstreams open automatically on app startup | ✅ Done |
 | Theme Categories | Filter themes by Dark/Light in theme picker | ✅ Done |
 | Exclude List | Hide themes from random rotation | ✅ Done |
+| Import/Export | Share workstream configurations as JSON | ✅ Done |
 | Window Switching | List and switch between Ghostty windows | ⏸️ Paused (needs code signing) |
 
 ## Not Yet Implemented
-
-### High Priority
-
-| Feature | Description | Complexity |
-|---------|-------------|------------|
-| Copy Theme Name | Copy current theme to clipboard | Easy |
 
 ### Low Priority / Future
 
 | Feature | Description | Complexity |
 |---------|-------------|------------|
-| Theme Search | Search all themes in menu | Easy |
-| Import/Export | Share workstream configurations | Easy |
 | Sync | iCloud sync for workstreams/favorites | Hard |
 
 ## Technical Notes

@@ -329,6 +329,31 @@ class ThemeManager: ObservableObject {
         }
     }
 
+    func exportWorkstreams() -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? encoder.encode(workstreams)
+    }
+
+    func importWorkstreams(from data: Data, replace: Bool = false) -> Int {
+        guard let imported = try? JSONDecoder().decode([Workstream].self, from: data) else {
+            return 0
+        }
+
+        if replace {
+            workstreams = imported
+        } else {
+            // Merge - add imported workstreams with new UUIDs to avoid conflicts
+            for var workstream in imported {
+                workstream.id = UUID()
+                workstreams.append(workstream)
+            }
+        }
+
+        saveWorkstreams()
+        return imported.count
+    }
+
     // MARK: - Theme Colors
 
     private var themeColorsCache: [String: ThemeColors] = [:]

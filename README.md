@@ -18,6 +18,7 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 - **Theme Preview** - Color swatches show theme colors before launching
 - **Favorites** - Star themes you like for quick access
 - **Exclude List** - Hide themes you don't like from random rotation
+- **Import/Export** - Share workstream configurations as JSON
 - **Recent Themes** - Quick access to your last 5 themes
 - **Menu Bar Only** - Lives in your menu bar, no Dock icon
 
@@ -92,6 +93,16 @@ Hide themes you don't want from random rotation:
 - Excluded themes will never appear when using Random Theme
 - View excluded themes in the **Excluded** submenu
 - Click any excluded theme to re-include it, or **Clear All Excluded** to reset
+
+### Import/Export Workstreams
+
+Share your workstream configurations:
+- Open **Manage Workstreams** (⌘,)
+- Click **Export...** to save all workstreams to a JSON file
+- Click **Import...** to load workstreams from a JSON file
+- Imported workstreams are added to your existing list
+
+Great for sharing setups with teammates or backing up your configuration.
 
 ### Keyboard Shortcuts
 

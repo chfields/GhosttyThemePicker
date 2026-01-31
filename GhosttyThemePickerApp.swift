@@ -587,7 +587,27 @@ struct SettingsView: View {
             .frame(minHeight: 150)
 
             HStack {
+                Button {
+                    importWorkstreams()
+                } label: {
+                    HStack {
+                        Image(systemName: "square.and.arrow.down")
+                        Text("Import...")
+                    }
+                }
+
+                Button {
+                    exportWorkstreams()
+                } label: {
+                    HStack {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Export...")
+                    }
+                }
+                .disabled(themeManager.workstreams.isEmpty)
+
                 Spacer()
+
                 Button {
                     showingAddSheet = true
                 } label: {
@@ -608,6 +628,35 @@ struct SettingsView: View {
         .sheet(item: $editingWorkstream) { workstream in
             WorkstreamEditorView(themeManager: themeManager, workstream: workstream) {
                 editingWorkstream = nil
+            }
+        }
+    }
+
+    private func exportWorkstreams() {
+        guard let data = themeManager.exportWorkstreams() else { return }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "workstreams.json"
+        panel.title = "Export Workstreams"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            try? data.write(to: url)
+        }
+    }
+
+    private func importWorkstreams() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.title = "Import Workstreams"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            if let data = try? Data(contentsOf: url) {
+                let count = themeManager.importWorkstreams(from: data)
+                if count > 0 {
+                    // Show brief confirmation - workstreams will appear in list
+                }
             }
         }
     }
