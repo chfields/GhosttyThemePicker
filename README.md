@@ -2,6 +2,8 @@
 
 A simple macOS menu bar app that launches [Ghostty](https://ghostty.org) with a randomly selected theme from the 300+ built-in themes.
 
+A great way to run multiple [Claude Code](https://github.com/anthropics/claude-code) sessions with different themes to help you visually track your different workstreams.
+
 ![Menu Bar](https://img.shields.io/badge/macOS-13%2B-blue)
 
 ## Features
