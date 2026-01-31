@@ -195,8 +195,7 @@ struct QuickLaunchView: View {
                                 onDismiss?()
                             } label: {
                                 HStack {
-                                    Image(systemName: "folder")
-                                        .frame(width: 24)
+                                    ThemeSwatchView(colors: themeManager.getThemeColors(workstream.theme))
                                     VStack(alignment: .leading) {
                                         Text(workstream.name)
                                         if let dir = workstream.directory {
@@ -234,9 +233,10 @@ struct QuickLaunchView: View {
                                 onDismiss?()
                             } label: {
                                 HStack {
+                                    ThemeSwatchView(colors: themeManager.getThemeColors(theme))
                                     Image(systemName: "star.fill")
                                         .foregroundColor(.yellow)
-                                        .frame(width: 24)
+                                        .font(.caption)
                                     Text(theme)
                                     Spacer()
                                 }
@@ -263,8 +263,10 @@ struct QuickLaunchView: View {
                                 onDismiss?()
                             } label: {
                                 HStack {
+                                    ThemeSwatchView(colors: themeManager.getThemeColors(theme))
                                     Image(systemName: "clock")
-                                        .frame(width: 24)
+                                        .foregroundColor(.secondary)
+                                        .font(.caption)
                                     Text(theme)
                                     Spacer()
                                 }
@@ -296,6 +298,44 @@ struct QuickLaunchView: View {
         .onExitCommand {
             onDismiss?()
         }
+    }
+}
+
+// MARK: - Theme Swatch View
+
+struct ThemeSwatchView: View {
+    let colors: ThemeColors
+    let size: CGFloat
+
+    init(colors: ThemeColors, size: CGFloat = 16) {
+        self.colors = colors
+        self.size = size
+    }
+
+    var body: some View {
+        HStack(spacing: 1) {
+            Rectangle()
+                .fill(colors.background)
+                .frame(width: size, height: size)
+                .help("Background")
+            Rectangle()
+                .fill(colors.foreground)
+                .frame(width: size * 0.5, height: size)
+                .help("Foreground")
+            Rectangle()
+                .fill(colors.accent1)
+                .frame(width: size * 0.5, height: size)
+                .help("Accent (Magenta)")
+            Rectangle()
+                .fill(colors.accent2)
+                .frame(width: size * 0.5, height: size)
+                .help("Accent (Cyan)")
+        }
+        .cornerRadius(3)
+        .overlay(
+            RoundedRectangle(cornerRadius: 3)
+                .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
+        )
     }
 }
 
@@ -577,16 +617,22 @@ struct WorkstreamEditorView: View {
                             .textFieldStyle(.roundedBorder)
 
                         List(filteredThemes.prefix(100), id: \.self, selection: $selectedTheme) { theme in
-                            Text(theme)
-                                .tag(theme)
+                            HStack {
+                                ThemeSwatchView(colors: themeManager.getThemeColors(theme), size: 14)
+                                Text(theme)
+                            }
+                            .tag(theme)
                         }
                         .frame(height: 100)
                         .border(Color.gray.opacity(0.3))
 
                         if !selectedTheme.isEmpty {
-                            Text("Selected: \(selectedTheme)")
-                                .font(.caption)
-                                .foregroundColor(.blue)
+                            HStack {
+                                ThemeSwatchView(colors: themeManager.getThemeColors(selectedTheme))
+                                Text("Selected: \(selectedTheme)")
+                                    .font(.caption)
+                                    .foregroundColor(.blue)
+                            }
                         }
                     }
 

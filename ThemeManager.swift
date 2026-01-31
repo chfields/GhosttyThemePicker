@@ -1,6 +1,21 @@
 import Foundation
+import SwiftUI
 
 // MARK: - Models
+
+struct ThemeColors {
+    let background: Color
+    let foreground: Color
+    let accent1: Color  // Usually red/pink (palette 1 or 5)
+    let accent2: Color  // Usually green/cyan (palette 2 or 6)
+
+    static let placeholder = ThemeColors(
+        background: .gray,
+        foreground: .white,
+        accent1: .red,
+        accent2: .green
+    )
+}
 
 struct Workstream: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
@@ -255,5 +270,118 @@ class ThemeManager: ObservableObject {
         if let encoded = try? JSONEncoder().encode(workstreams) {
             UserDefaults.standard.set(encoded, forKey: workstreamsKey)
         }
+    }
+
+    // MARK: - Theme Colors
+
+    private var themeColorsCache: [String: ThemeColors] = [:]
+    private let themesPath = "/Applications/Ghostty.app/Contents/Resources/ghostty/themes"
+
+    func getThemeColors(_ themeName: String) -> ThemeColors {
+        if let cached = themeColorsCache[themeName] {
+            return cached
+        }
+
+        let colors = parseThemeFile(themeName)
+        themeColorsCache[themeName] = colors
+        return colors
+    }
+
+    private func parseThemeFile(_ themeName: String) -> ThemeColors {
+        let filePath = "\(themesPath)/\(themeName)"
+
+        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else {
+            return ThemeColors.placeholder
+        }
+
+        var background: Color = .black
+        var foreground: Color = .white
+        var palette1: Color = .red      // Red
+        var palette2: Color = .green    // Green
+        var palette5: Color = .pink     // Magenta/Pink
+        var palette6: Color = .cyan     // Cyan
+
+        for line in content.components(separatedBy: .newlines) {
+            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2 else { continue }
+
+            let key = parts[0]
+            let value = parts[1]
+
+            if key == "background" {
+                background = colorFromHex(value)
+            } else if key == "foreground" {
+                foreground = colorFromHex(value)
+            } else if key == "palette" {
+                // Format: "palette = N=#color" but we split on first =, so value is "N=#color"
+                let paletteParts = value.split(separator: "=", maxSplits: 1)
+                if paletteParts.count == 2,
+                   let index = Int(paletteParts[0].trimmingCharacters(in: .whitespaces)) {
+                    let colorHex = String(paletteParts[1]).trimmingCharacters(in: .whitespaces)
+                    let color = colorFromHex(colorHex)
+                    switch index {
+                    case 1: palette1 = color
+                    case 2: palette2 = color
+                    case 5: palette5 = color
+                    case 6: palette6 = color
+                    default: break
+                    }
+                }
+            }
+        }
+
+        return ThemeColors(
+            background: background,
+            foreground: foreground,
+            accent1: palette5,  // Magenta/Pink - usually vibrant
+            accent2: palette6   // Cyan - usually vibrant
+        )
+    }
+
+    func isDarkTheme(_ themeName: String) -> Bool {
+        let colors = getThemeColors(themeName)
+        // Convert background color to brightness
+        // Using the cached colors, extract RGB and calculate luminance
+        let filePath = "\(themesPath)/\(themeName)"
+        guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else {
+            return true // Default to dark
+        }
+
+        for line in content.components(separatedBy: .newlines) {
+            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, parts[0] == "background" else { continue }
+
+            var hex = parts[1].trimmingCharacters(in: .whitespaces)
+            if hex.hasPrefix("#") { hex.removeFirst() }
+
+            guard hex.count == 6, let rgb = UInt64(hex, radix: 16) else { return true }
+
+            let r = Double((rgb >> 16) & 0xFF) / 255.0
+            let g = Double((rgb >> 8) & 0xFF) / 255.0
+            let b = Double(rgb & 0xFF) / 255.0
+
+            // Calculate relative luminance
+            let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            return luminance < 0.5
+        }
+        return true
+    }
+
+    private func colorFromHex(_ hex: String) -> Color {
+        var hexString = hex.trimmingCharacters(in: .whitespaces)
+        if hexString.hasPrefix("#") {
+            hexString.removeFirst()
+        }
+
+        guard hexString.count == 6,
+              let rgb = UInt64(hexString, radix: 16) else {
+            return .gray
+        }
+
+        let r = Double((rgb >> 16) & 0xFF) / 255.0
+        let g = Double((rgb >> 8) & 0xFF) / 255.0
+        let b = Double(rgb & 0xFF) / 255.0
+
+        return Color(red: r, green: g, blue: b)
     }
 }
