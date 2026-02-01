@@ -56,10 +56,26 @@ Select an option to launch Ghostty, or press **Esc** to close. No need to click 
 
 Press **Control + Option + P** from anywhere to instantly see and switch between all your open Ghostty windows:
 
+- **Claude state detection** - Windows where Claude is waiting for input (showing `✳`) appear at the top
+- **Smart sorting** - Windows sorted by: Needs Input → Claude Running → Working → Other
+- **Workstream matching** - Windows automatically matched to workstreams by working directory
 - **Search windows** - Type to filter by window name or workstream name
 - **Click to focus** - Select any window to bring it to the front
-- **Shows actual names** - Displays the real window titles (e.g., "Frontend", "Backend API", "Claude Code")
-- **Workstream mapping** - If a window matches a workstream title, shows both the workstream name and window title
+
+**Claude Code Integration:**
+
+The Window Switcher detects Claude Code's state by reading the window title:
+- `✳ Claude Code` = **Needs Input** (sorted to top with hourglass icon)
+- `⠐ Claude Code` (spinner) = **Working** (shown with gear icon)
+- Claude process detected = **Claude** badge (when title detection unavailable)
+
+This works automatically when Claude Code sets dynamic window titles. Workstreams launched from this app don't use `--title`, allowing Claude to control the title and show its status.
+
+**Workstream Detection:**
+
+Windows are matched to workstreams in two ways:
+1. **By PID** - Windows launched from this app are tracked automatically
+2. **By directory** - Windows opened manually are matched by their working directory to workstream configurations
 
 **First time setup:** The Window Switcher requires **Screen Recording** permission to read window names from macOS. When you first press ⌃⌥P, you'll see a permission prompt with:
 - **Open System Settings** button - Takes you directly to Privacy & Security settings
@@ -67,7 +83,7 @@ Press **Control + Option + P** from anywhere to instantly see and switch between
 
 This permission only allows the app to read window metadata (names and positions). We do not record, capture, or store any screen content.
 
-**Perfect for multiple Claude sessions:** When running several Claude Code workstreams, the Window Switcher lets you jump between them instantly without alt-tabbing through all your other apps.
+**Perfect for multiple Claude sessions:** When running several Claude Code workstreams, the Window Switcher shows which sessions need your attention, letting you jump to them instantly without alt-tabbing through all your other apps.
 
 ### Workstreams
 
