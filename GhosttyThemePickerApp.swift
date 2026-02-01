@@ -830,6 +830,15 @@ struct WorkstreamEditorView: View {
                             }
                             .pickerStyle(.segmented)
                             .frame(width: 150)
+
+                            Button {
+                                if let randomTheme = filteredThemes.randomElement() {
+                                    selectedTheme = randomTheme
+                                }
+                            } label: {
+                                Image(systemName: "dice")
+                            }
+                            .help("Pick random theme")
                         }
 
                         Text("\(filteredThemes.count) themes")
