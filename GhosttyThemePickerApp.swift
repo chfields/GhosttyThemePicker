@@ -170,11 +170,74 @@ class WindowSwitcherPanel {
 
 // MARK: - Window Switcher View
 
+/// Represents Claude's state in a terminal window
+enum ClaudeState: Int, Comparable {
+    case notRunning = 0   // No Claude in this window
+    case working = 1      // Claude is processing (spinner in title)
+    case running = 2      // Claude detected via process tree (can't determine exact state)
+    case waiting = 3      // Claude waiting for input (✳ in title)
+
+    static func < (lhs: ClaudeState, rhs: ClaudeState) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    var icon: String {
+        switch self {
+        case .waiting: return "hourglass"
+        case .running: return "terminal"
+        case .working: return "gearshape"
+        case .notRunning: return "terminal"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .waiting: return "Needs Input"
+        case .running: return "Claude"
+        case .working: return "Working"
+        case .notRunning: return ""
+        }
+    }
+}
+
 struct GhosttyWindow: Identifiable {
     let id: Int
-    let name: String
-    let axIndex: Int  // Index for AppleScript (1-based, per-process)
-    let pid: pid_t    // Process ID this window belongs to
+    let name: String              // Window title (e.g., "✳ Claude Code" or "~/Projects")
+    let axIndex: Int              // Index for AppleScript (1-based, per-process)
+    let pid: pid_t                // Process ID this window belongs to
+    var workstreamName: String?   // Matched workstream name (via PID cache or directory)
+    var shellCwd: String?         // Current working directory of shell
+    var hasClaudeProcess: Bool = false  // Whether a Claude process is running in this window
+
+    /// Determine Claude's state based on window title and process detection
+    var claudeState: ClaudeState {
+        // Check title for exact state indicators
+        if let firstChar = name.first {
+            // ✳ (U+2733) = waiting for input
+            if firstChar == "✳" && name.contains("Claude") {
+                return .waiting
+            }
+            // Braille spinner characters = working
+            let spinnerChars: Set<Character> = ["⠁", "⠂", "⠄", "⠈", "⠐", "⠠", "⡀", "⢀"]
+            if spinnerChars.contains(firstChar) && name.contains("Claude") {
+                return .working
+            }
+        }
+        // Fall back to process detection
+        return hasClaudeProcess ? .running : .notRunning
+    }
+
+    /// Display name: prefer workstream name, fall back to shortened path or title
+    var displayName: String {
+        if let ws = workstreamName {
+            return ws
+        }
+        // If title looks like a path, shorten it
+        if name.hasPrefix("/") || name.hasPrefix("~") {
+            return (name as NSString).lastPathComponent
+        }
+        return name
+    }
 }
 
 class WindowSwitcherViewModel: ObservableObject {
@@ -183,13 +246,164 @@ class WindowSwitcherViewModel: ObservableObject {
     @Published var selectedIndex: Int = 0
     @Published var hasScreenRecordingPermission: Bool = false
 
+    weak var themeManager: ThemeManager?
+
+    /// Windows filtered by search and sorted by Claude state (waiting first)
     var filteredWindows: [GhosttyWindow] {
-        if searchText.isEmpty {
-            return windows
+        var result = windows
+        if !searchText.isEmpty {
+            result = result.filter { window in
+                window.name.localizedCaseInsensitiveContains(searchText) ||
+                (window.workstreamName?.localizedCaseInsensitiveContains(searchText) ?? false)
+            }
         }
-        return windows.filter { window in
-            window.name.localizedCaseInsensitiveContains(searchText)
+        // Sort by Claude state (waiting > running > working > notRunning)
+        return result.sorted { $0.claudeState > $1.claudeState }
+    }
+
+    /// Group windows by Claude state for sectioned display
+    var groupedWindows: [(state: ClaudeState, windows: [GhosttyWindow])] {
+        let sorted = filteredWindows
+        var groups: [(ClaudeState, [GhosttyWindow])] = []
+
+        let waiting = sorted.filter { $0.claudeState == .waiting }
+        let running = sorted.filter { $0.claudeState == .running }
+        let working = sorted.filter { $0.claudeState == .working }
+        let other = sorted.filter { $0.claudeState == .notRunning }
+
+        if !waiting.isEmpty { groups.append((.waiting, waiting)) }
+        if !running.isEmpty { groups.append((.running, running)) }
+        if !working.isEmpty { groups.append((.working, working)) }
+        if !other.isEmpty { groups.append((.notRunning, other)) }
+
+        return groups
+    }
+
+    // MARK: - Cached Process Data (for efficient lookups)
+
+    private var cachedProcessTree: [pid_t: (ppid: pid_t, comm: String)] = [:]
+    private var cachedClaudePids: Set<pid_t> = []
+    private var cachedShellCwds: [pid_t: String] = [:]
+
+    /// Load all process data in one shot for efficient lookups
+    func loadProcessCache() {
+        cachedProcessTree.removeAll()
+        cachedClaudePids.removeAll()
+        cachedShellCwds.removeAll()
+
+        // Single ps call to get all process info
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-eo", "pid,ppid,comm"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return
         }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return }
+
+        for line in output.components(separatedBy: "\n") {
+            let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 2)
+            guard parts.count >= 3,
+                  let pid = pid_t(parts[0]),
+                  let ppid = pid_t(parts[1]) else { continue }
+            let comm = String(parts[2])
+            cachedProcessTree[pid] = (ppid: ppid, comm: comm)
+
+            if comm.lowercased() == "claude" {
+                cachedClaudePids.insert(pid)
+            }
+        }
+    }
+
+    // MARK: - Shell CWD Detection
+
+    /// Get the current working directory of the shell running inside a Ghostty window
+    func getShellCwd(ghosttyPid: pid_t) -> String? {
+        // Find login -> shell chain using cached data
+        guard let loginPid = cachedProcessTree.first(where: {
+            $0.value.ppid == ghosttyPid && $0.value.comm.contains("login")
+        })?.key else {
+            return nil
+        }
+
+        guard let shellPid = cachedProcessTree.first(where: {
+            $0.value.ppid == loginPid
+        })?.key else {
+            return nil
+        }
+
+        // Check cache first
+        if let cached = cachedShellCwds[shellPid] {
+            return cached
+        }
+
+        // Get cwd using lsof (only for shells we need)
+        let cwd = getCwd(of: shellPid)
+        if let cwd = cwd {
+            cachedShellCwds[shellPid] = cwd
+        }
+        return cwd
+    }
+
+    private func getCwd(of pid: pid_t) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
+        task.arguments = ["-a", "-p", "\(pid)", "-d", "cwd", "-F", "n"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return nil }
+
+        for line in output.components(separatedBy: "\n") {
+            if line.hasPrefix("n") {
+                return String(line.dropFirst())
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Claude Process Detection
+
+    /// Check if a Claude process is running under the given Ghostty PID
+    func hasClaudeProcess(ghosttyPid: pid_t) -> Bool {
+        for claudePid in cachedClaudePids {
+            if traceToGhostty(from: claudePid) == ghosttyPid {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func traceToGhostty(from pid: pid_t) -> pid_t? {
+        var current = pid
+        for _ in 0..<15 {
+            guard let info = cachedProcessTree[current] else { return nil }
+            let parent = info.ppid
+            if parent <= 1 { return nil }
+            // Check if parent is a Ghostty window we know about
+            if windows.contains(where: { $0.pid == parent }) {
+                return parent
+            }
+            current = parent
+        }
+        return nil
     }
 
     func handleKeyDown(_ event: NSEvent, onDismiss: (() -> Void)?) -> Bool {
@@ -254,14 +468,6 @@ struct WindowSwitcherView: View {
     // Check if Screen Recording permission is granted
     private func checkPermissions() {
         viewModel.hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
-    }
-
-    // Find workstream name that matches a window title
-    func workstreamName(for windowTitle: String) -> String? {
-        guard let manager = themeManager else { return nil }
-        return manager.workstreams.first { ws in
-            ws.windowTitle == windowTitle
-        }?.name
     }
 
     var body: some View {
@@ -346,35 +552,16 @@ struct WindowSwitcherView: View {
                     ScrollView {
                         VStack(spacing: 4) {
                             ForEach(Array(viewModel.filteredWindows.enumerated()), id: \.element.id) { index, window in
+                                // Section header when state changes
+                                if index == 0 || viewModel.filteredWindows[index - 1].claudeState != window.claudeState {
+                                    sectionHeader(for: window.claudeState)
+                                }
+
                                 Button {
                                     viewModel.focusWindow(axIndex: window.axIndex, pid: window.pid)
                                     onDismiss?()
                                 } label: {
-                                    HStack {
-                                        Image(systemName: "terminal")
-                                            .foregroundColor(.accentColor)
-                                        if let wsName = workstreamName(for: window.name) {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(wsName)
-                                                    .fontWeight(.medium)
-                                                Text(window.name)
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                            }
-                                        } else {
-                                            Text(window.name)
-                                        }
-                                        Spacer()
-                                    }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        index == viewModel.selectedIndex
-                                            ? Color.accentColor.opacity(0.2)
-                                            : Color(NSColor.controlBackgroundColor).opacity(0.5)
-                                    )
-                                    .cornerRadius(6)
+                                    windowRow(window: window, isSelected: index == viewModel.selectedIndex)
                                 }
                                 .buttonStyle(.plain)
                                 .id(index)
@@ -407,6 +594,9 @@ struct WindowSwitcherView: View {
         }
         .frame(width: 400, height: 300)
         .onAppear {
+            // Connect viewModel to themeManager for workstream lookup
+            viewModel.themeManager = themeManager
+
             checkPermissions()
             if viewModel.hasScreenRecordingPermission {
                 loadWindows()
@@ -428,6 +618,86 @@ struct WindowSwitcherView: View {
         }
         .onExitCommand {
             onDismiss?()
+        }
+    }
+
+    // MARK: - View Helpers
+
+    @ViewBuilder
+    private func sectionHeader(for state: ClaudeState) -> some View {
+        if state != .notRunning {
+            HStack {
+                Image(systemName: state.icon)
+                    .font(.caption)
+                Text(state.label)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                Spacer()
+            }
+            .foregroundColor(state == .waiting ? .orange : .secondary)
+            .padding(.horizontal, 4)
+            .padding(.top, index(of: state) > 0 ? 12 : 4)
+            .padding(.bottom, 4)
+        }
+    }
+
+    private func index(of state: ClaudeState) -> Int {
+        let states: [ClaudeState] = [.waiting, .running, .working, .notRunning]
+        return states.firstIndex(of: state) ?? 0
+    }
+
+    @ViewBuilder
+    private func windowRow(window: GhosttyWindow, isSelected: Bool) -> some View {
+        HStack(spacing: 8) {
+            // State icon
+            Image(systemName: window.claudeState.icon)
+                .foregroundColor(iconColor(for: window.claudeState))
+                .frame(width: 16)
+
+            // Window info
+            VStack(alignment: .leading, spacing: 2) {
+                // Primary: workstream name or display name
+                Text(window.displayName)
+                    .fontWeight(window.workstreamName != nil ? .medium : .regular)
+
+                // Secondary: window title if different from display name
+                if window.workstreamName != nil {
+                    Text(window.name)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            // Claude state badge for "running" (when we detect Claude but can't tell exact state)
+            if window.claudeState == .running {
+                Text("Claude")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.2))
+                    .cornerRadius(4)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            isSelected
+                ? Color.accentColor.opacity(0.2)
+                : Color(NSColor.controlBackgroundColor).opacity(0.5)
+        )
+        .cornerRadius(6)
+    }
+
+    private func iconColor(for state: ClaudeState) -> Color {
+        switch state {
+        case .waiting: return .orange
+        case .running: return .accentColor
+        case .working: return .blue
+        case .notRunning: return .secondary
         }
     }
 
@@ -454,11 +724,6 @@ struct WindowSwitcherView: View {
 
         print("Found \(ghosttyApps.count) Ghostty process(es)")
 
-        // Debug logging to file
-        let logPath = "/tmp/ghostty_picker_debug.log"
-        let timestamp = Date()
-        try? "[\(timestamp)] Found \(ghosttyApps.count) Ghostty process(es)\n".write(toFile: logPath, atomically: false, encoding: .utf8)
-
         var ghosttyWindows: [GhosttyWindow] = []
 
         // Query windows from each Ghostty process
@@ -473,12 +738,10 @@ struct WindowSwitcherView: View {
             guard result == .success,
                   let windows = windowsRef as? [AXUIElement] else {
                 print("Failed to get accessibility windows for PID \(pid) (error: \(result.rawValue))")
-                try? "  PID \(pid): FAILED (error: \(result.rawValue))\n".appendToFile(atPath: logPath)
                 continue  // Skip this process, try others
             }
 
             print("Process PID \(pid) returned \(windows.count) window(s)")
-            try? "  PID \(pid): \(windows.count) window(s)\n".appendToFile(atPath: logPath)
 
             // Enumerate windows from this process (1-based index per process)
             for (perProcessIndex, windowElement) in windows.enumerated() {
@@ -494,13 +757,15 @@ struct WindowSwitcherView: View {
         }
 
         print("Extracted \(ghosttyWindows.count) total Ghostty windows from Accessibility API")
-        try? "  TOTAL: \(ghosttyWindows.count) windows\n".appendToFile(atPath: logPath)
 
         // Only return true if we actually found windows
         guard !ghosttyWindows.isEmpty else {
             print("Accessibility API returned empty window list - using CGWindowList fallback")
             return false
         }
+
+        // Enrich windows with workstream names, shell cwd, and Claude detection
+        ghosttyWindows = enrichWindows(ghosttyWindows)
 
         viewModel.windows = ghosttyWindows
 
@@ -511,6 +776,27 @@ struct WindowSwitcherView: View {
 
         print("Successfully loaded \(ghosttyWindows.count) windows via Accessibility API")
         return true
+    }
+
+    /// Enrich windows with workstream names, shell cwd, and Claude process detection
+    private func enrichWindows(_ windows: [GhosttyWindow]) -> [GhosttyWindow] {
+        // Load process tree data once (single ps call)
+        viewModel.loadProcessCache()
+
+        return windows.map { window in
+            var enriched = window
+
+            // Get shell working directory
+            enriched.shellCwd = viewModel.getShellCwd(ghosttyPid: window.pid)
+
+            // Get workstream name (from PID cache or directory match)
+            enriched.workstreamName = themeManager?.workstreamNameForPID(window.pid, shellCwd: enriched.shellCwd)
+
+            // Check for Claude process
+            enriched.hasClaudeProcess = viewModel.hasClaudeProcess(ghosttyPid: window.pid)
+
+            return enriched
+        }
     }
 
     private func loadWindowsViaCGWindowList() {
@@ -540,6 +826,9 @@ struct WindowSwitcherView: View {
 
             ghosttyWindows.append(GhosttyWindow(id: windowNumber, name: name, axIndex: perProcessIndex, pid: pid))
         }
+
+        // Enrich windows with workstream names, shell cwd, and Claude detection
+        ghosttyWindows = enrichWindows(ghosttyWindows)
 
         viewModel.windows = ghosttyWindows
 
