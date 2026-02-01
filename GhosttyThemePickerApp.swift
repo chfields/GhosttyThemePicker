@@ -112,16 +112,28 @@ class HotkeyManager: ObservableObject {
 
 // MARK: - Window Switcher Panel
 
+class KeyHandlingPanel: NSPanel {
+    var keyHandler: ((NSEvent) -> Bool)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, let handler = keyHandler, handler(event) {
+            // Event was handled, don't pass it on
+            return
+        }
+        super.sendEvent(event)
+    }
+}
+
 class WindowSwitcherPanel {
     static let shared = WindowSwitcherPanel()
-    private var panel: NSPanel?
+    private var panel: KeyHandlingPanel?
 
     func show() {
         if let existing = panel {
             existing.close()
         }
 
-        let panel = NSPanel(
+        let panel = KeyHandlingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
             styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
@@ -136,7 +148,7 @@ class WindowSwitcherPanel {
         panel.isReleasedWhenClosed = false
         panel.backgroundColor = NSColor.windowBackgroundColor
 
-        let view = WindowSwitcherView(themeManager: HotkeyManager.instance?.themeManager) {
+        let view = WindowSwitcherView(themeManager: HotkeyManager.instance?.themeManager, panel: panel) {
             panel.close()
         }
 
@@ -163,22 +175,87 @@ struct GhosttyWindow: Identifiable {
     let axIndex: Int  // Index for AppleScript (1-based)
 }
 
+class WindowSwitcherViewModel: ObservableObject {
+    @Published var windows: [GhosttyWindow] = []
+    @Published var searchText: String = ""
+    @Published var selectedIndex: Int = 0
+    @Published var hasScreenRecordingPermission: Bool = false
+
+    var filteredWindows: [GhosttyWindow] {
+        if searchText.isEmpty {
+            return windows
+        }
+        return windows.filter { window in
+            window.name.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    func handleKeyDown(_ event: NSEvent, onDismiss: (() -> Void)?) -> Bool {
+        guard !filteredWindows.isEmpty else { return false }
+
+        switch Int(event.keyCode) {
+        case 125: // Down arrow
+            selectedIndex = (selectedIndex + 1) % filteredWindows.count
+            return true
+        case 126: // Up arrow
+            selectedIndex = (selectedIndex - 1 + filteredWindows.count) % filteredWindows.count
+            return true
+        case 36, 76: // Enter/Return
+            focusWindow(axIndex: filteredWindows[selectedIndex].axIndex)
+            onDismiss?()
+            return true
+        default:
+            return false
+        }
+    }
+
+    func focusWindow(axIndex: Int) {
+        let script = """
+        tell application "System Events"
+            tell process "ghostty"
+                set frontmost to true
+                perform action "AXRaise" of window \(axIndex)
+            end tell
+        end tell
+        """
+
+        let process = Process()
+        let errorPipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            if let errorOutput = String(data: errorData, encoding: .utf8), !errorOutput.isEmpty {
+                print("Focus window error: \(errorOutput)")
+            }
+        } catch {
+            print("Failed to focus window: \(error)")
+        }
+    }
+}
+
 struct WindowSwitcherView: View {
-    @State private var windows: [GhosttyWindow] = []
-    @State private var searchText: String = ""
-    @State private var selectedIndex: Int = 0
-    @State private var hasScreenRecordingPermission: Bool = false
+    @StateObject private var viewModel = WindowSwitcherViewModel()
     var themeManager: ThemeManager?
+    weak var panel: KeyHandlingPanel?
     var onDismiss: (() -> Void)?
 
-    init(themeManager: ThemeManager? = nil, onDismiss: (() -> Void)? = nil) {
+    init(themeManager: ThemeManager? = nil, panel: KeyHandlingPanel? = nil, onDismiss: (() -> Void)? = nil) {
         self.themeManager = themeManager
+        self.panel = panel
         self.onDismiss = onDismiss
     }
 
     // Check if Screen Recording permission is granted
     private func checkPermissions() {
-        hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+        viewModel.hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
     }
 
     // Find workstream name that matches a window title
@@ -187,16 +264,6 @@ struct WindowSwitcherView: View {
         return manager.workstreams.first { ws in
             ws.windowTitle == windowTitle
         }?.name
-    }
-
-    var filteredWindows: [GhosttyWindow] {
-        if searchText.isEmpty {
-            return windows
-        }
-        return windows.filter { window in
-            window.name.localizedCaseInsensitiveContains(searchText) ||
-            (workstreamName(for: window.name)?.localizedCaseInsensitiveContains(searchText) ?? false)
-        }
     }
 
     var body: some View {
@@ -218,13 +285,13 @@ struct WindowSwitcherView: View {
             Divider()
 
             // Search field
-            TextField("Search windows...", text: $searchText)
+            TextField("Search windows...", text: $viewModel.searchText)
                 .textFieldStyle(.roundedBorder)
                 .padding(.horizontal)
                 .padding(.top, 8)
 
             // Window list
-            if !hasScreenRecordingPermission {
+            if !viewModel.hasScreenRecordingPermission {
                 VStack(spacing: 16) {
                     Spacer()
                     Image(systemName: "eye.trianglebadge.exclamationmark")
@@ -255,7 +322,7 @@ struct WindowSwitcherView: View {
 
                         Button {
                             checkPermissions()
-                            if hasScreenRecordingPermission {
+                            if viewModel.hasScreenRecordingPermission {
                                 loadWindows()
                             }
                         } label: {
@@ -268,49 +335,61 @@ struct WindowSwitcherView: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
-            } else if filteredWindows.isEmpty {
+            } else if viewModel.filteredWindows.isEmpty {
                 VStack {
                     Spacer()
-                    Text(windows.isEmpty ? "No Ghostty windows open" : "No matching windows")
+                    Text(viewModel.windows.isEmpty ? "No Ghostty windows open" : "No matching windows")
                         .foregroundColor(.secondary)
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(Array(filteredWindows.enumerated()), id: \.element.id) { index, window in
-                            Button {
-                                focusWindow(axIndex: window.axIndex)
-                                onDismiss?()
-                            } label: {
-                                HStack {
-                                    Image(systemName: "terminal")
-                                        .foregroundColor(.accentColor)
-                                    if let wsName = workstreamName(for: window.name) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(wsName)
-                                                .fontWeight(.medium)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(Array(viewModel.filteredWindows.enumerated()), id: \.element.id) { index, window in
+                                Button {
+                                    viewModel.focusWindow(axIndex: window.axIndex)
+                                    onDismiss?()
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "terminal")
+                                            .foregroundColor(.accentColor)
+                                        if let wsName = workstreamName(for: window.name) {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(wsName)
+                                                    .fontWeight(.medium)
+                                                Text(window.name)
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        } else {
                                             Text(window.name)
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
                                         }
-                                    } else {
-                                        Text(window.name)
+                                        Spacer()
                                     }
-                                    Spacer()
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        index == viewModel.selectedIndex
+                                            ? Color.accentColor.opacity(0.2)
+                                            : Color(NSColor.controlBackgroundColor).opacity(0.5)
+                                    )
+                                    .cornerRadius(6)
                                 }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
-                                .cornerRadius(6)
+                                .buttonStyle(.plain)
+                                .id(index)
                             }
-                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                    }
+                    .onChange(of: viewModel.selectedIndex) { newIndex in
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo(newIndex, anchor: .center)
                         }
                     }
-                    .padding(.horizontal)
-                    .padding(.top, 8)
                 }
             }
 
@@ -318,11 +397,11 @@ struct WindowSwitcherView: View {
 
             // Footer
             HStack {
-                Text("Press Esc to close")
+                Text("↑↓ Navigate • Enter Select • Esc Close")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
-                Text("\(windows.count) window\(windows.count == 1 ? "" : "s")")
+                Text("\(viewModel.windows.count) window\(viewModel.windows.count == 1 ? "" : "s")")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -331,12 +410,23 @@ struct WindowSwitcherView: View {
         .frame(width: 400, height: 300)
         .onAppear {
             checkPermissions()
-            if hasScreenRecordingPermission {
+            if viewModel.hasScreenRecordingPermission {
                 loadWindows()
             } else {
                 // Request permission (will show system dialog)
                 CGRequestScreenCaptureAccess()
             }
+
+            // Set up key handler on panel
+            panel?.keyHandler = { [weak viewModel, onDismiss] event in
+                viewModel?.handleKeyDown(event, onDismiss: onDismiss) ?? false
+            }
+        }
+        .onDisappear {
+            panel?.keyHandler = nil
+        }
+        .onChange(of: viewModel.searchText) { _ in
+            viewModel.selectedIndex = 0
         }
         .onExitCommand {
             onDismiss?()
@@ -366,38 +456,11 @@ struct WindowSwitcherView: View {
             windowIndex += 1
         }
 
-        self.windows = ghosttyWindows
-    }
+        viewModel.windows = ghosttyWindows
 
-    private func focusWindow(axIndex: Int) {
-        let script = """
-        tell application "System Events"
-            tell process "ghostty"
-                set frontmost to true
-                perform action "AXRaise" of window \(axIndex)
-            end tell
-        end tell
-        """
-
-        let process = Process()
-        let errorPipe = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errorPipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            // Check for errors
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            if let errorOutput = String(data: errorData, encoding: .utf8), !errorOutput.isEmpty {
-                print("Focus window error: \(errorOutput)")
-            }
-        } catch {
-            print("Failed to focus window: \(error)")
+        // Reset selection if out of bounds
+        if viewModel.selectedIndex >= ghosttyWindows.count {
+            viewModel.selectedIndex = 0
         }
     }
 }
