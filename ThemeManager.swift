@@ -352,14 +352,20 @@ class ThemeManager: ObservableObject {
     /// Get workstream name for a Ghostty PID.
     /// First checks launched windows cache, then falls back to directory matching.
     func workstreamNameForPID(_ pid: pid_t, shellCwd: String?) -> String? {
+        print("DEBUG: Looking up PID \(pid), shellCwd: \(shellCwd ?? "nil")")
+        print("DEBUG: launchedWindows keys: \(launchedWindows.keys.map { $0 })")
+
         // Check if we launched this window
         if let name = launchedWindows[pid] {
+            print("DEBUG: Found in launchedWindows: \(name)")
             return name
         }
         // Fall back to directory matching
         if let cwd = shellCwd, let ws = workstreamForDirectory(cwd) {
+            print("DEBUG: Matched by directory: \(ws.name)")
             return ws.name
         }
+        print("DEBUG: No match found")
         return nil
     }
 

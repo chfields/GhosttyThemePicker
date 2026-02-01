@@ -281,9 +281,10 @@ class WindowSwitcherViewModel: ObservableObject {
 
     // MARK: - Cached Process Data (for efficient lookups)
 
-    private var cachedProcessTree: [pid_t: (ppid: pid_t, comm: String)] = [:]
+    var cachedProcessTree: [pid_t: (ppid: pid_t, comm: String)] = [:]  // Internal for debug
     private var cachedClaudePids: Set<pid_t> = []
     private var cachedShellCwds: [pid_t: String] = [:]
+    var debugLog: ((String) -> Void)?  // Debug logging callback
 
     /// Load all process data in one shot for efficient lookups
     func loadProcessCache() {
@@ -301,12 +302,14 @@ class WindowSwitcherViewModel: ObservableObject {
 
         do {
             try task.run()
-            task.waitUntilExit()
         } catch {
             return
         }
 
+        // Read data before waiting (to avoid deadlock with large output)
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+
         guard let output = String(data: data, encoding: .utf8) else { return }
 
         for line in output.components(separatedBy: "\n") {
@@ -331,14 +334,18 @@ class WindowSwitcherViewModel: ObservableObject {
         guard let loginPid = cachedProcessTree.first(where: {
             $0.value.ppid == ghosttyPid && $0.value.comm.contains("login")
         })?.key else {
+            debugLog?("getShellCwd(\(ghosttyPid)): no login found")
             return nil
         }
 
-        guard let shellPid = cachedProcessTree.first(where: {
+        guard let shellEntry = cachedProcessTree.first(where: {
             $0.value.ppid == loginPid
-        })?.key else {
+        }) else {
+            debugLog?("getShellCwd(\(ghosttyPid)): no shell found under login \(loginPid)")
             return nil
         }
+        let shellPid = shellEntry.key
+        debugLog?("getShellCwd(\(ghosttyPid)): found shell \(shellPid) (\(shellEntry.value.comm))")
 
         // Check cache first
         if let cached = cachedShellCwds[shellPid] {
@@ -347,6 +354,7 @@ class WindowSwitcherViewModel: ObservableObject {
 
         // Get cwd using lsof (only for shells we need)
         let cwd = getCwd(of: shellPid)
+        debugLog?("getShellCwd(\(ghosttyPid)): lsof returned \(cwd ?? "nil")")
         if let cwd = cwd {
             cachedShellCwds[shellPid] = cwd
         }
@@ -355,21 +363,30 @@ class WindowSwitcherViewModel: ObservableObject {
 
     private func getCwd(of pid: pid_t) -> String? {
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         task.arguments = ["-a", "-p", "\(pid)", "-d", "cwd", "-F", "n"]
         let pipe = Pipe()
+        let errPipe = Pipe()
         task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
+        task.standardError = errPipe
 
         do {
             try task.run()
-            task.waitUntilExit()
         } catch {
+            debugLog?("getCwd(\(pid)): failed to run lsof: \(error)")
             return nil
         }
 
+        // Read data BEFORE waiting to avoid deadlock
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+
+        let exitCode = task.terminationStatus
+        let output = String(data: data, encoding: .utf8) ?? ""
+        let errOutput = String(data: errData, encoding: .utf8) ?? ""
+
+        debugLog?("getCwd(\(pid)): exit=\(exitCode), stdout='\(output.prefix(100))', stderr='\(errOutput.prefix(100))'")
 
         for line in output.components(separatedBy: "\n") {
             if line.hasPrefix("n") {
@@ -779,13 +796,46 @@ struct WindowSwitcherView: View {
         return true
     }
 
+    private func debugLog(_ msg: String) {
+        let log = "[\(Date())] \(msg)\n"
+        if let data = log.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: "/tmp/gtp_debug.log") {
+                if let handle = FileHandle(forWritingAtPath: "/tmp/gtp_debug.log") {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                FileManager.default.createFile(atPath: "/tmp/gtp_debug.log", contents: data)
+            }
+        }
+    }
+
     /// Enrich windows with workstream names, shell cwd, and Claude process detection (async)
     private func enrichWindowsAsync(_ windows: [GhosttyWindow]) {
+        debugLog("enrichWindowsAsync called with \(windows.count) windows")
+        debugLog("themeManager is \(themeManager == nil ? "nil" : "set")")
+
+        let logFunc = self.debugLog
         DispatchQueue.global(qos: .userInitiated).async { [weak viewModel, weak themeManager] in
-            guard let viewModel = viewModel else { return }
+            logFunc("Inside async block, viewModel=\(viewModel == nil ? "nil" : "set"), themeManager=\(themeManager == nil ? "nil" : "set")")
+            guard let viewModel = viewModel else {
+                logFunc("viewModel is nil, returning")
+                return
+            }
+
+            // Set debug logging on viewModel
+            viewModel.debugLog = logFunc
 
             // Load process tree data once (single ps call)
             viewModel.loadProcessCache()
+            logFunc("Process cache loaded with \(viewModel.cachedProcessTree.count) entries")
+
+            // Debug: show relevant entries for our window PIDs
+            for window in windows {
+                let children = viewModel.cachedProcessTree.filter { $0.value.ppid == window.pid }
+                logFunc("  Children of PID \(window.pid): \(children.map { "(\($0.key): \($0.value.comm))" }.joined(separator: ", "))")
+            }
 
             let enriched = windows.map { window -> GhosttyWindow in
                 var enriched = window
@@ -802,8 +852,14 @@ struct WindowSwitcherView: View {
                 return enriched
             }
 
+            logFunc("Enrichment complete. Windows with workstream names:")
+            for w in enriched {
+                logFunc("  PID \(w.pid): ws=\(w.workstreamName ?? "nil"), cwd=\(w.shellCwd ?? "nil")")
+            }
+
             // Update UI on main thread
             DispatchQueue.main.async {
+                logFunc("Updating UI with enriched windows")
                 viewModel.windows = enriched
             }
         }
