@@ -45,6 +45,9 @@ class ThemeManager: ObservableObject {
     // Cache of launched window PIDs -> workstream names (for window switcher)
     @Published var launchedWindows: [pid_t: String] = [:]
 
+    // Cache of launched window PIDs -> theme names (for capturing windows as workstreams)
+    @Published var launchedThemes: [pid_t: String] = [:]
+
     private let maxRecentThemes = 5
     private let recentThemesKey = "RecentThemes"
     private let favoriteThemesKey = "FavoriteThemes"
@@ -140,6 +143,13 @@ class ThemeManager: ObservableObject {
 
         do {
             try process.run()
+
+            // Track theme by PID for "Save as Workstream" feature
+            let pid = process.processIdentifier
+            DispatchQueue.main.async {
+                self.launchedThemes[pid] = theme
+            }
+
             addToRecentThemes(theme)
             lastSelectedTheme = theme
         } catch {
@@ -367,6 +377,18 @@ class ThemeManager: ObservableObject {
         }
         print("DEBUG: No match found")
         return nil
+    }
+
+    /// Get theme for a Ghostty PID.
+    /// Checks workstream launch first, then direct theme launch.
+    func themeForPID(_ pid: pid_t) -> String? {
+        // Check if launched via workstream
+        if let wsName = launchedWindows[pid],
+           let ws = workstreams.first(where: { $0.name == wsName }) {
+            return ws.theme
+        }
+        // Check if launched via direct theme selection (random, favorites, recent)
+        return launchedThemes[pid]
     }
 
     private func loadWorkstreams() {

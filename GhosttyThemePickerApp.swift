@@ -200,6 +200,152 @@ enum ClaudeState: Int, Comparable {
     }
 }
 
+/// Data captured from a Ghostty window for creating a workstream
+struct CapturedWindow {
+    let directory: String
+    let title: String
+    let theme: String?  // nil only if window was opened outside our app
+    let pid: pid_t
+
+    /// Suggested workstream name derived from directory
+    var suggestedName: String {
+        let url = URL(fileURLWithPath: directory)
+        let lastComponent = url.lastPathComponent
+        if lastComponent.isEmpty || lastComponent == "/" {
+            return "Home"
+        }
+        return lastComponent
+    }
+}
+
+/// Helper to capture the frontmost Ghostty window
+class WindowCapture {
+    /// Capture the frontmost Ghostty window's info
+    static func captureFrontmostGhosttyWindow(themeManager: ThemeManager) -> CapturedWindow? {
+        // Get frontmost Ghostty window using CGWindowList
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+
+        // Find frontmost Ghostty window (lowest layer number = frontmost)
+        var ghosttyWindows: [(info: [String: Any], layer: Int)] = []
+        for window in windowList {
+            guard let ownerName = window["kCGWindowOwnerName"] as? String,
+                  ownerName.lowercased() == "ghostty",
+                  let layer = window["kCGWindowLayer"] as? Int else {
+                continue
+            }
+            ghosttyWindows.append((info: window, layer: layer))
+        }
+
+        // Sort by layer (lower = more front)
+        ghosttyWindows.sort { $0.layer < $1.layer }
+
+        guard let frontmost = ghosttyWindows.first else {
+            return nil
+        }
+
+        let windowInfo = frontmost.info
+        guard let ownerPID = windowInfo["kCGWindowOwnerPID"] as? Int else {
+            return nil
+        }
+
+        let pid = pid_t(ownerPID)
+        let title = windowInfo["kCGWindowName"] as? String ?? "Ghostty"
+
+        // Get shell cwd
+        guard let directory = getShellCwd(ghosttyPid: pid) else {
+            return nil
+        }
+
+        // Look up theme from our caches
+        let theme = themeManager.themeForPID(pid)
+
+        return CapturedWindow(
+            directory: directory,
+            title: title,
+            theme: theme,
+            pid: pid
+        )
+    }
+
+    /// Get the current working directory of the shell inside a Ghostty window
+    private static func getShellCwd(ghosttyPid: pid_t) -> String? {
+        // First, get process tree to find the shell
+        let psTask = Process()
+        psTask.executableURL = URL(fileURLWithPath: "/bin/ps")
+        psTask.arguments = ["-eo", "pid,ppid,comm"]
+        let psPipe = Pipe()
+        psTask.standardOutput = psPipe
+        psTask.standardError = FileHandle.nullDevice
+
+        do {
+            try psTask.run()
+        } catch {
+            return nil
+        }
+
+        let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
+        psTask.waitUntilExit()
+
+        guard let psOutput = String(data: psData, encoding: .utf8) else { return nil }
+
+        // Parse process tree
+        var processTree: [pid_t: (ppid: pid_t, comm: String)] = [:]
+        for line in psOutput.components(separatedBy: "\n") {
+            let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 2)
+            guard parts.count >= 3,
+                  let pid = pid_t(parts[0]),
+                  let ppid = pid_t(parts[1]) else { continue }
+            let comm = String(parts[2])
+            processTree[pid] = (ppid: ppid, comm: comm)
+        }
+
+        // Find login -> shell chain
+        guard let loginPid = processTree.first(where: {
+            $0.value.ppid == ghosttyPid && $0.value.comm.contains("login")
+        })?.key else {
+            return nil
+        }
+
+        guard let shellEntry = processTree.first(where: {
+            $0.value.ppid == loginPid
+        }) else {
+            return nil
+        }
+
+        let shellPid = shellEntry.key
+
+        // Get cwd using lsof
+        let lsofTask = Process()
+        lsofTask.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsofTask.arguments = ["-a", "-p", "\(shellPid)", "-d", "cwd", "-F", "n"]
+        let lsofPipe = Pipe()
+        lsofTask.standardOutput = lsofPipe
+        lsofTask.standardError = FileHandle.nullDevice
+
+        do {
+            try lsofTask.run()
+        } catch {
+            return nil
+        }
+
+        let lsofData = lsofPipe.fileHandleForReading.readDataToEndOfFile()
+        lsofTask.waitUntilExit()
+
+        guard let lsofOutput = String(data: lsofData, encoding: .utf8) else { return nil }
+
+        for line in lsofOutput.components(separatedBy: "\n") {
+            if line.hasPrefix("n") {
+                return String(line.dropFirst())
+            }
+        }
+
+        return nil
+    }
+}
+
 struct GhosttyWindow: Identifiable {
     let id: Int
     let name: String              // Window title (e.g., "✳ Claude Code" or "~/Projects")
@@ -1128,6 +1274,234 @@ struct QuickLaunchView: View {
     }
 }
 
+// MARK: - Save Workstream Panel
+
+class SaveWorkstreamPanel {
+    static let shared = SaveWorkstreamPanel()
+    private var panel: NSPanel?
+
+    func show(capturedWindow: CapturedWindow, themeManager: ThemeManager) {
+        if let existing = panel {
+            existing.close()
+        }
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 380),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.title = "Save Window as Workstream"
+        panel.titleVisibility = .visible
+        panel.titlebarAppearsTransparent = false
+        panel.isMovableByWindowBackground = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isReleasedWhenClosed = false
+        panel.backgroundColor = NSColor.windowBackgroundColor
+
+        let view = SaveWorkstreamView(
+            capturedWindow: capturedWindow,
+            themeManager: themeManager
+        ) {
+            panel.close()
+        }
+
+        panel.contentView = NSHostingView(rootView: view)
+        panel.center()
+
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        self.panel = panel
+    }
+
+    func close() {
+        panel?.close()
+        panel = nil
+    }
+}
+
+// MARK: - Save Workstream View
+
+struct SaveWorkstreamView: View {
+    let capturedWindow: CapturedWindow
+    @ObservedObject var themeManager: ThemeManager
+    var onDismiss: (() -> Void)?
+
+    @State private var name: String = ""
+    @State private var selectedTheme: String = ""
+    @State private var command: String = ""
+
+    var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty && !selectedTheme.isEmpty
+    }
+
+    /// Check if a workstream with this directory already exists
+    var existingWorkstream: Workstream? {
+        themeManager.workstreams.first { $0.directory == capturedWindow.directory }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Content
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Warning if workstream exists
+                    if let existing = existingWorkstream {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("A workstream for this directory already exists: \"\(existing.name)\"")
+                                .font(.caption)
+                        }
+                        .padding(8)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(6)
+                    }
+
+                    // Name field
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Name")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        TextField("Workstream name", text: $name)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    // Directory (read-only)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Directory")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        HStack {
+                            Text(capturedWindow.directory)
+                                .font(.system(.body, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                        }
+                        .padding(8)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(6)
+                        Text("Detected from window")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+
+                    // Theme
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Theme")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        if let detectedTheme = capturedWindow.theme {
+                            // Theme was detected
+                            HStack {
+                                ThemeSwatchView(colors: themeManager.getThemeColors(detectedTheme))
+                                Text(detectedTheme)
+                                Spacer()
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                            }
+                            .padding(8)
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(6)
+                            Text("Detected from launch")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        } else {
+                            // Theme picker required
+                            Picker("Theme", selection: $selectedTheme) {
+                                Text("Select a theme...").tag("")
+                                ForEach(themeManager.themes, id: \.self) { theme in
+                                    HStack {
+                                        Text(theme)
+                                    }
+                                    .tag(theme)
+                                }
+                            }
+                            .labelsHidden()
+
+                            if !selectedTheme.isEmpty {
+                                HStack {
+                                    ThemeSwatchView(colors: themeManager.getThemeColors(selectedTheme))
+                                    Text(selectedTheme)
+                                        .font(.caption)
+                                }
+                            }
+
+                            Text("Window opened externally - please select theme")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                        }
+                    }
+
+                    // Command (optional)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Command (optional)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        TextField("e.g., claude, zsh, nvim", text: $command)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Leave empty for default shell")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding()
+            }
+
+            Divider()
+
+            // Buttons
+            HStack {
+                Button("Cancel") {
+                    onDismiss?()
+                }
+                .keyboardShortcut(.escape)
+
+                Spacer()
+
+                Button("Save Workstream") {
+                    saveWorkstream()
+                }
+                .keyboardShortcut(.return)
+                .disabled(!isValid)
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+        }
+        .frame(width: 400, height: 380)
+        .onAppear {
+            // Initialize with captured data
+            name = capturedWindow.suggestedName
+            selectedTheme = capturedWindow.theme ?? ""
+        }
+    }
+
+    private func saveWorkstream() {
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedCmd = command.trimmingCharacters(in: .whitespaces)
+        let theme = capturedWindow.theme ?? selectedTheme
+
+        themeManager.addWorkstream(
+            name: trimmedName,
+            theme: theme,
+            directory: capturedWindow.directory,
+            windowTitle: nil,
+            command: trimmedCmd.isEmpty ? nil : trimmedCmd,
+            autoLaunch: false,
+            extraArgs: nil
+        )
+
+        onDismiss?()
+    }
+}
+
 // MARK: - Theme Swatch View
 
 struct ThemeSwatchView: View {
@@ -1217,6 +1591,24 @@ struct MenuContent: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
+
+        Divider()
+
+        // Save Current Window as Workstream
+        Button {
+            if let captured = WindowCapture.captureFrontmostGhosttyWindow(themeManager: themeManager) {
+                SaveWorkstreamPanel.shared.show(capturedWindow: captured, themeManager: themeManager)
+            } else {
+                // No Ghostty window found - could show an alert
+                print("No Ghostty window found to capture")
+            }
+        } label: {
+            HStack {
+                Image(systemName: "plus.rectangle.on.folder")
+                Text("Save Current Window as Workstream...")
+            }
+        }
+        .keyboardShortcut("s", modifiers: [.command, .shift])
 
         Divider()
 
