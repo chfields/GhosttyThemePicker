@@ -42,6 +42,9 @@ class ThemeManager: ObservableObject {
     @Published var workstreams: [Workstream] = []
     @Published var lastSelectedTheme: String?
 
+    // Cache of launched window PIDs -> workstream names (for window switcher)
+    @Published var launchedWindows: [pid_t: String] = [:]
+
     private let maxRecentThemes = 5
     private let recentThemesKey = "RecentThemes"
     private let favoriteThemesKey = "FavoriteThemes"
@@ -151,12 +154,18 @@ class ThemeManager: ObservableObject {
             args.append("--working-directory=\(dir)")
         }
 
-        if let title = workstream.windowTitle, !title.isEmpty {
-            args.append("--title=\(title)")
-        }
+        // NOTE: We intentionally do NOT set --title here anymore.
+        // This allows Claude Code to set dynamic window titles with status indicators
+        // (✳ for waiting, spinner for working). The workstream name is tracked via PID.
+        // Legacy windowTitle field is preserved for backwards compatibility but not used.
 
         if let cmd = workstream.command, !cmd.isEmpty {
+            // Wrap command in interactive login shell so PATH is resolved correctly
+            // Ghostty's -e passes directly to login which doesn't resolve PATH
+            // -i = interactive (sources .zshrc), -l = login (sources .zprofile)
             args.append("-e")
+            args.append("/bin/zsh")
+            args.append("-ilc")
             args.append(cmd)
         }
 
@@ -172,6 +181,13 @@ class ThemeManager: ObservableObject {
 
         do {
             try process.run()
+
+            // Store PID -> workstream name mapping for window switcher
+            let pid = process.processIdentifier
+            DispatchQueue.main.async {
+                self.launchedWindows[pid] = workstream.name
+            }
+
             addToRecentThemes(workstream.theme)
             lastSelectedTheme = workstream.theme
         } catch {
@@ -314,6 +330,43 @@ class ThemeManager: ObservableObject {
         for workstream in autoLaunchWorkstreams {
             launchWorkstream(workstream)
         }
+    }
+
+    /// Find a workstream that matches the given directory path.
+    /// Used to identify windows not launched by the app (e.g., opened manually).
+    func workstreamForDirectory(_ directory: String) -> Workstream? {
+        // Exact match first
+        if let ws = workstreams.first(where: { $0.directory == directory }) {
+            return ws
+        }
+        // Check if directory is a subdirectory of a workstream's directory
+        for ws in workstreams {
+            guard let wsDir = ws.directory, !wsDir.isEmpty else { continue }
+            if directory.hasPrefix(wsDir + "/") {
+                return ws
+            }
+        }
+        return nil
+    }
+
+    /// Get workstream name for a Ghostty PID.
+    /// First checks launched windows cache, then falls back to directory matching.
+    func workstreamNameForPID(_ pid: pid_t, shellCwd: String?) -> String? {
+        print("DEBUG: Looking up PID \(pid), shellCwd: \(shellCwd ?? "nil")")
+        print("DEBUG: launchedWindows keys: \(launchedWindows.keys.map { $0 })")
+
+        // Check if we launched this window
+        if let name = launchedWindows[pid] {
+            print("DEBUG: Found in launchedWindows: \(name)")
+            return name
+        }
+        // Fall back to directory matching
+        if let cwd = shellCwd, let ws = workstreamForDirectory(cwd) {
+            print("DEBUG: Matched by directory: \(ws.name)")
+            return ws.name
+        }
+        print("DEBUG: No match found")
+        return nil
     }
 
     private func loadWorkstreams() {

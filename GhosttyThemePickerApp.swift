@@ -1,5 +1,6 @@
 import SwiftUI
 import Carbon
+import ApplicationServices
 
 @main
 struct GhosttyThemePickerApp: App {
@@ -45,46 +46,863 @@ struct GhosttyThemePickerApp: App {
 
 class HotkeyManager: ObservableObject {
     var themeManager: ThemeManager?
-    private var hotkeyRef: EventHotKeyRef?
-    private static var instance: HotkeyManager?
+    private var hotkeyRefG: EventHotKeyRef?
+    private var hotkeyRefP: EventHotKeyRef?
+    static var instance: HotkeyManager?
 
     func registerHotkey() {
         HotkeyManager.instance = self
 
-        // Register Control+Option+G using Carbon API
-        var hotKeyID = EventHotKeyID()
-        hotKeyID.signature = OSType(0x4754504B) // "GTPK" - GhosttyThemePickerKey
-        hotKeyID.id = 1
-
-        // G = keycode 5, Control+Option = controlKey + optionKey
         let modifiers: UInt32 = UInt32(controlKey | optionKey)
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
 
         InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
-            HotkeyManager.instance?.handleHotkey()
+            var hotKeyID = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+
+            if hotKeyID.id == 1 {
+                HotkeyManager.instance?.handleHotkeyG()
+            } else if hotKeyID.id == 2 {
+                HotkeyManager.instance?.handleHotkeyP()
+            }
             return noErr
         }, 1, &eventType, nil, nil)
 
-        let status = RegisterEventHotKey(5, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotkeyRef)
+        // Register Control+Option+G (Quick Launch)
+        var hotKeyIDG = EventHotKeyID()
+        hotKeyIDG.signature = OSType(0x4754504B) // "GTPK"
+        hotKeyIDG.id = 1
+        let statusG = RegisterEventHotKey(5, modifiers, hotKeyIDG, GetApplicationEventTarget(), 0, &hotkeyRefG) // G = keycode 5
 
-        if status == noErr {
-            print("Global hotkey registered: ⌃⌥G (Carbon)")
-        } else {
-            print("Failed to register hotkey: \(status)")
+        // Register Control+Option+P (Window Switcher)
+        var hotKeyIDP = EventHotKeyID()
+        hotKeyIDP.signature = OSType(0x4754504B) // "GTPK"
+        hotKeyIDP.id = 2
+        let statusP = RegisterEventHotKey(35, modifiers, hotKeyIDP, GetApplicationEventTarget(), 0, &hotkeyRefP) // P = keycode 35
+
+        if statusG == noErr {
+            print("Global hotkey registered: ⌃⌥G (Quick Launch)")
+        }
+        if statusP == noErr {
+            print("Global hotkey registered: ⌃⌥P (Window Switcher)")
         }
     }
 
-    private func handleHotkey() {
+    private func handleHotkeyG() {
         DispatchQueue.main.async {
             QuickLaunchPanel.shared.show(themeManager: self.themeManager)
         }
     }
 
+    private func handleHotkeyP() {
+        DispatchQueue.main.async {
+            WindowSwitcherPanel.shared.show()
+        }
+    }
+
     deinit {
-        if let ref = hotkeyRef {
+        if let ref = hotkeyRefG {
             UnregisterEventHotKey(ref)
         }
+        if let ref = hotkeyRefP {
+            UnregisterEventHotKey(ref)
+        }
+    }
+}
+
+// MARK: - Window Switcher Panel
+
+class KeyHandlingPanel: NSPanel {
+    var keyHandler: ((NSEvent) -> Bool)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, let handler = keyHandler, handler(event) {
+            // Event was handled, don't pass it on
+            return
+        }
+        super.sendEvent(event)
+    }
+}
+
+class WindowSwitcherPanel {
+    static let shared = WindowSwitcherPanel()
+    private var panel: KeyHandlingPanel?
+
+    func show() {
+        if let existing = panel {
+            existing.close()
+        }
+
+        let panel = KeyHandlingPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isReleasedWhenClosed = false
+        panel.backgroundColor = NSColor.windowBackgroundColor
+
+        let view = WindowSwitcherView(themeManager: HotkeyManager.instance?.themeManager, panel: panel) {
+            panel.close()
+        }
+
+        panel.contentView = NSHostingView(rootView: view)
+        panel.center()
+
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        self.panel = panel
+    }
+
+    func close() {
+        panel?.close()
+        panel = nil
+    }
+}
+
+// MARK: - Window Switcher View
+
+/// Represents Claude's state in a terminal window
+enum ClaudeState: Int, Comparable {
+    case notRunning = 0   // No Claude in this window
+    case working = 1      // Claude is processing (spinner in title)
+    case running = 2      // Claude detected via process tree (can't determine exact state)
+    case waiting = 3      // Claude waiting for input (✳ in title)
+
+    static func < (lhs: ClaudeState, rhs: ClaudeState) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    var icon: String {
+        switch self {
+        case .waiting: return "hourglass"
+        case .running: return "terminal"
+        case .working: return "gearshape"
+        case .notRunning: return "terminal"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .waiting: return "Needs Input"
+        case .running: return "Claude"
+        case .working: return "Working"
+        case .notRunning: return ""
+        }
+    }
+}
+
+struct GhosttyWindow: Identifiable {
+    let id: Int
+    let name: String              // Window title (e.g., "✳ Claude Code" or "~/Projects")
+    let axIndex: Int              // Index for AppleScript (1-based, per-process)
+    let pid: pid_t                // Process ID this window belongs to
+    var workstreamName: String?   // Matched workstream name (via PID cache or directory)
+    var shellCwd: String?         // Current working directory of shell
+    var hasClaudeProcess: Bool = false  // Whether a Claude process is running in this window
+
+    /// Determine Claude's state based on window title and process detection
+    var claudeState: ClaudeState {
+        // Check title for exact state indicators
+        if let firstChar = name.first {
+            // ✳ (U+2733) = waiting for input
+            if firstChar == "✳" && name.contains("Claude") {
+                return .waiting
+            }
+            // Braille spinner characters = working
+            let spinnerChars: Set<Character> = ["⠁", "⠂", "⠄", "⠈", "⠐", "⠠", "⡀", "⢀"]
+            if spinnerChars.contains(firstChar) && name.contains("Claude") {
+                return .working
+            }
+        }
+        // Fall back to process detection
+        return hasClaudeProcess ? .running : .notRunning
+    }
+
+    /// Display name: prefer workstream name, fall back to shortened path or title
+    var displayName: String {
+        if let ws = workstreamName {
+            return ws
+        }
+        // If title looks like a path, shorten it
+        if name.hasPrefix("/") || name.hasPrefix("~") {
+            return (name as NSString).lastPathComponent
+        }
+        return name
+    }
+}
+
+class WindowSwitcherViewModel: ObservableObject {
+    @Published var windows: [GhosttyWindow] = []
+    @Published var searchText: String = ""
+    @Published var selectedIndex: Int = 0
+    @Published var hasScreenRecordingPermission: Bool = false
+
+    weak var themeManager: ThemeManager?
+
+    /// Windows filtered by search and sorted by Claude state (waiting first)
+    var filteredWindows: [GhosttyWindow] {
+        var result = windows
+        if !searchText.isEmpty {
+            result = result.filter { window in
+                window.name.localizedCaseInsensitiveContains(searchText) ||
+                (window.workstreamName?.localizedCaseInsensitiveContains(searchText) ?? false)
+            }
+        }
+        // Sort by Claude state (waiting > running > working > notRunning)
+        return result.sorted { $0.claudeState > $1.claudeState }
+    }
+
+    /// Group windows by Claude state for sectioned display
+    var groupedWindows: [(state: ClaudeState, windows: [GhosttyWindow])] {
+        let sorted = filteredWindows
+        var groups: [(ClaudeState, [GhosttyWindow])] = []
+
+        let waiting = sorted.filter { $0.claudeState == .waiting }
+        let running = sorted.filter { $0.claudeState == .running }
+        let working = sorted.filter { $0.claudeState == .working }
+        let other = sorted.filter { $0.claudeState == .notRunning }
+
+        if !waiting.isEmpty { groups.append((.waiting, waiting)) }
+        if !running.isEmpty { groups.append((.running, running)) }
+        if !working.isEmpty { groups.append((.working, working)) }
+        if !other.isEmpty { groups.append((.notRunning, other)) }
+
+        return groups
+    }
+
+    // MARK: - Cached Process Data (for efficient lookups)
+
+    var cachedProcessTree: [pid_t: (ppid: pid_t, comm: String)] = [:]  // Internal for debug
+    private var cachedClaudePids: Set<pid_t> = []
+    private var cachedShellCwds: [pid_t: String] = [:]
+    var debugLog: ((String) -> Void)?  // Debug logging callback
+
+    /// Load all process data in one shot for efficient lookups
+    func loadProcessCache() {
+        cachedProcessTree.removeAll()
+        cachedClaudePids.removeAll()
+        cachedShellCwds.removeAll()
+
+        // Single ps call to get all process info
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-eo", "pid,ppid,comm"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+
+        do {
+            try task.run()
+        } catch {
+            return
+        }
+
+        // Read data before waiting (to avoid deadlock with large output)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+
+        guard let output = String(data: data, encoding: .utf8) else { return }
+
+        for line in output.components(separatedBy: "\n") {
+            let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 2)
+            guard parts.count >= 3,
+                  let pid = pid_t(parts[0]),
+                  let ppid = pid_t(parts[1]) else { continue }
+            let comm = String(parts[2])
+            cachedProcessTree[pid] = (ppid: ppid, comm: comm)
+
+            if comm.lowercased() == "claude" {
+                cachedClaudePids.insert(pid)
+            }
+        }
+    }
+
+    // MARK: - Shell CWD Detection
+
+    /// Get the current working directory of the shell running inside a Ghostty window
+    func getShellCwd(ghosttyPid: pid_t) -> String? {
+        // Find login -> shell chain using cached data
+        guard let loginPid = cachedProcessTree.first(where: {
+            $0.value.ppid == ghosttyPid && $0.value.comm.contains("login")
+        })?.key else {
+            debugLog?("getShellCwd(\(ghosttyPid)): no login found")
+            return nil
+        }
+
+        guard let shellEntry = cachedProcessTree.first(where: {
+            $0.value.ppid == loginPid
+        }) else {
+            debugLog?("getShellCwd(\(ghosttyPid)): no shell found under login \(loginPid)")
+            return nil
+        }
+        let shellPid = shellEntry.key
+        debugLog?("getShellCwd(\(ghosttyPid)): found shell \(shellPid) (\(shellEntry.value.comm))")
+
+        // Check cache first
+        if let cached = cachedShellCwds[shellPid] {
+            return cached
+        }
+
+        // Get cwd using lsof (only for shells we need)
+        let cwd = getCwd(of: shellPid)
+        debugLog?("getShellCwd(\(ghosttyPid)): lsof returned \(cwd ?? "nil")")
+        if let cwd = cwd {
+            cachedShellCwds[shellPid] = cwd
+        }
+        return cwd
+    }
+
+    private func getCwd(of pid: pid_t) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        task.arguments = ["-a", "-p", "\(pid)", "-d", "cwd", "-F", "n"]
+        let pipe = Pipe()
+        let errPipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = errPipe
+
+        do {
+            try task.run()
+        } catch {
+            debugLog?("getCwd(\(pid)): failed to run lsof: \(error)")
+            return nil
+        }
+
+        // Read data BEFORE waiting to avoid deadlock
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+
+        let exitCode = task.terminationStatus
+        let output = String(data: data, encoding: .utf8) ?? ""
+        let errOutput = String(data: errData, encoding: .utf8) ?? ""
+
+        debugLog?("getCwd(\(pid)): exit=\(exitCode), stdout='\(output.prefix(100))', stderr='\(errOutput.prefix(100))'")
+
+        for line in output.components(separatedBy: "\n") {
+            if line.hasPrefix("n") {
+                return String(line.dropFirst())
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Claude Process Detection
+
+    /// Check if a Claude process is running under the given Ghostty PID
+    func hasClaudeProcess(ghosttyPid: pid_t) -> Bool {
+        for claudePid in cachedClaudePids {
+            if traceToGhostty(from: claudePid) == ghosttyPid {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func traceToGhostty(from pid: pid_t) -> pid_t? {
+        var current = pid
+        for _ in 0..<15 {
+            guard let info = cachedProcessTree[current] else { return nil }
+            let parent = info.ppid
+            if parent <= 1 { return nil }
+            // Check if parent is a Ghostty window we know about
+            if windows.contains(where: { $0.pid == parent }) {
+                return parent
+            }
+            current = parent
+        }
+        return nil
+    }
+
+    func handleKeyDown(_ event: NSEvent, onDismiss: (() -> Void)?) -> Bool {
+        guard !filteredWindows.isEmpty else { return false }
+
+        switch Int(event.keyCode) {
+        case 125: // Down arrow
+            selectedIndex = (selectedIndex + 1) % filteredWindows.count
+            return true
+        case 126: // Up arrow
+            selectedIndex = (selectedIndex - 1 + filteredWindows.count) % filteredWindows.count
+            return true
+        case 36, 76: // Enter/Return
+            let window = filteredWindows[selectedIndex]
+            focusWindow(axIndex: window.axIndex, pid: window.pid)
+            onDismiss?()
+            return true
+        default:
+            return false
+        }
+    }
+
+    func focusWindow(axIndex: Int, pid: pid_t) {
+        // Use NSRunningApplication to activate the specific process by PID
+        guard let app = NSRunningApplication(processIdentifier: pid) else {
+            print("Could not find application with PID \(pid)")
+            return
+        }
+
+        // Activate the specific process
+        app.activate(options: [.activateIgnoringOtherApps])
+
+        // Use Accessibility API to raise the specific window
+        let appElement = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+        guard result == .success,
+              let windows = windowsRef as? [AXUIElement],
+              axIndex > 0 && axIndex <= windows.count else {
+            print("Could not get window \(axIndex) for PID \(pid)")
+            return
+        }
+
+        let windowElement = windows[axIndex - 1]  // axIndex is 1-based
+        AXUIElementPerformAction(windowElement, kAXRaiseAction as CFString)
+    }
+}
+
+struct WindowSwitcherView: View {
+    @StateObject private var viewModel = WindowSwitcherViewModel()
+    var themeManager: ThemeManager?
+    weak var panel: KeyHandlingPanel?
+    var onDismiss: (() -> Void)?
+
+    init(themeManager: ThemeManager? = nil, panel: KeyHandlingPanel? = nil, onDismiss: (() -> Void)? = nil) {
+        self.themeManager = themeManager
+        self.panel = panel
+        self.onDismiss = onDismiss
+    }
+
+    // Check if Screen Recording permission is granted
+    private func checkPermissions() {
+        viewModel.hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Image(systemName: "macwindow.on.rectangle")
+                    .foregroundColor(.accentColor)
+                Text("Switch Window")
+                    .font(.headline)
+                Spacer()
+                Text("⌃⌥P")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+
+            Divider()
+
+            // Search field
+            TextField("Search windows...", text: $viewModel.searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+            // Window list
+            if !viewModel.hasScreenRecordingPermission {
+                VStack(spacing: 16) {
+                    Spacer()
+                    Image(systemName: "eye.trianglebadge.exclamationmark")
+                        .font(.system(size: 40))
+                        .foregroundColor(.orange)
+
+                    Text("Screen Recording Permission Required")
+                        .font(.headline)
+
+                    Text("Window names require Screen Recording permission to be displayed.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+
+                    VStack(spacing: 8) {
+                        Button {
+                            // Open System Settings to Privacy & Security > Screen Recording
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "gear")
+                                Text("Open System Settings")
+                            }
+                        }
+
+                        Button {
+                            checkPermissions()
+                            if viewModel.hasScreenRecordingPermission {
+                                loadWindows()
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.clockwise")
+                                Text("Retry")
+                            }
+                        }
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else if viewModel.filteredWindows.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(viewModel.windows.isEmpty ? "No Ghostty windows open" : "No matching windows")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(Array(viewModel.filteredWindows.enumerated()), id: \.element.id) { index, window in
+                                // Section header when state changes
+                                if index == 0 || viewModel.filteredWindows[index - 1].claudeState != window.claudeState {
+                                    sectionHeader(for: window.claudeState)
+                                }
+
+                                Button {
+                                    viewModel.focusWindow(axIndex: window.axIndex, pid: window.pid)
+                                    onDismiss?()
+                                } label: {
+                                    windowRow(window: window, isSelected: index == viewModel.selectedIndex)
+                                }
+                                .buttonStyle(.plain)
+                                .id(index)
+                            }
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                    }
+                    .onChange(of: viewModel.selectedIndex) { newIndex in
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo(newIndex, anchor: .center)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            // Footer
+            HStack {
+                Text("↑↓ Navigate • Enter Select • Esc Close")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(viewModel.windows.count) window\(viewModel.windows.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(8)
+        }
+        .frame(width: 400, height: 300)
+        .onAppear {
+            // Connect viewModel to themeManager for workstream lookup
+            viewModel.themeManager = themeManager
+
+            checkPermissions()
+            if viewModel.hasScreenRecordingPermission {
+                loadWindows()
+            } else {
+                // Request permission (will show system dialog)
+                CGRequestScreenCaptureAccess()
+            }
+
+            // Set up key handler on panel
+            panel?.keyHandler = { [weak viewModel, onDismiss] event in
+                viewModel?.handleKeyDown(event, onDismiss: onDismiss) ?? false
+            }
+        }
+        .onDisappear {
+            panel?.keyHandler = nil
+        }
+        .onChange(of: viewModel.searchText) { _ in
+            viewModel.selectedIndex = 0
+        }
+        .onExitCommand {
+            onDismiss?()
+        }
+    }
+
+    // MARK: - View Helpers
+
+    @ViewBuilder
+    private func sectionHeader(for state: ClaudeState) -> some View {
+        if state != .notRunning {
+            HStack {
+                Image(systemName: state.icon)
+                    .font(.caption)
+                Text(state.label)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                Spacer()
+            }
+            .foregroundColor(state == .waiting ? .orange : .secondary)
+            .padding(.horizontal, 4)
+            .padding(.top, index(of: state) > 0 ? 12 : 4)
+            .padding(.bottom, 4)
+        }
+    }
+
+    private func index(of state: ClaudeState) -> Int {
+        let states: [ClaudeState] = [.waiting, .running, .working, .notRunning]
+        return states.firstIndex(of: state) ?? 0
+    }
+
+    @ViewBuilder
+    private func windowRow(window: GhosttyWindow, isSelected: Bool) -> some View {
+        HStack(spacing: 8) {
+            // State icon
+            Image(systemName: window.claudeState.icon)
+                .foregroundColor(iconColor(for: window.claudeState))
+                .frame(width: 16)
+
+            // Window info
+            VStack(alignment: .leading, spacing: 2) {
+                // Primary: workstream name or display name
+                Text(window.displayName)
+                    .fontWeight(window.workstreamName != nil ? .medium : .regular)
+
+                // Secondary: window title if different from display name
+                if window.workstreamName != nil {
+                    Text(window.name)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            // Claude state badge for "running" (when we detect Claude but can't tell exact state)
+            if window.claudeState == .running {
+                Text("Claude")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.2))
+                    .cornerRadius(4)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            isSelected
+                ? Color.accentColor.opacity(0.2)
+                : Color(NSColor.controlBackgroundColor).opacity(0.5)
+        )
+        .cornerRadius(6)
+    }
+
+    private func iconColor(for state: ClaudeState) -> Color {
+        switch state {
+        case .waiting: return .orange
+        case .running: return .accentColor
+        case .working: return .blue
+        case .notRunning: return .secondary
+        }
+    }
+
+    private func loadWindows() {
+        // Try to load windows using Accessibility API first (correct order for AppleScript)
+        if loadWindowsViaAccessibilityAPI() {
+            return
+        }
+
+        // Fall back to CGWindowList API if Accessibility fails
+        print("Falling back to CGWindowList API")
+        loadWindowsViaCGWindowList()
+    }
+
+    private func loadWindowsViaAccessibilityAPI() -> Bool {
+        // Get ALL Ghostty processes (not just the first one)
+        let runningApps = NSWorkspace.shared.runningApplications
+        let ghosttyApps = runningApps.filter { $0.localizedName?.lowercased() == "ghostty" }
+
+        guard !ghosttyApps.isEmpty else {
+            print("No Ghostty processes found")
+            return false
+        }
+
+        print("Found \(ghosttyApps.count) Ghostty process(es)")
+
+        var ghosttyWindows: [GhosttyWindow] = []
+
+        // Query windows from each Ghostty process
+        for ghosttyApp in ghosttyApps {
+            let pid = ghosttyApp.processIdentifier
+            let appElement = AXUIElementCreateApplication(pid)
+
+            // Query windows from this specific process
+            var windowsRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+            guard result == .success,
+                  let windows = windowsRef as? [AXUIElement] else {
+                print("Failed to get accessibility windows for PID \(pid) (error: \(result.rawValue))")
+                continue  // Skip this process, try others
+            }
+
+            print("Process PID \(pid) returned \(windows.count) window(s)")
+
+            // Enumerate windows from this process (1-based index per process)
+            for (perProcessIndex, windowElement) in windows.enumerated() {
+                // Get window title
+                var titleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(windowElement, kAXTitleAttribute as CFString, &titleRef)
+                let title = (titleRef as? String) ?? "Window \(ghosttyWindows.count + 1)"
+
+                // Use a unique ID based on current count, but axIndex is per-process (1-based)
+                let id = ghosttyWindows.count + 1
+                ghosttyWindows.append(GhosttyWindow(id: id, name: title, axIndex: perProcessIndex + 1, pid: pid))
+            }
+        }
+
+        print("Extracted \(ghosttyWindows.count) total Ghostty windows from Accessibility API")
+
+        // Only return true if we actually found windows
+        guard !ghosttyWindows.isEmpty else {
+            print("Accessibility API returned empty window list - using CGWindowList fallback")
+            return false
+        }
+
+        // Show windows immediately (without enrichment)
+        viewModel.windows = ghosttyWindows
+
+        // Reset selection if out of bounds
+        if viewModel.selectedIndex >= ghosttyWindows.count {
+            viewModel.selectedIndex = 0
+        }
+
+        // Enrich windows async so UI doesn't block
+        enrichWindowsAsync(ghosttyWindows)
+
+        print("Successfully loaded \(ghosttyWindows.count) windows via Accessibility API")
+        return true
+    }
+
+    private func debugLog(_ msg: String) {
+        let log = "[\(Date())] \(msg)\n"
+        if let data = log.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: "/tmp/gtp_debug.log") {
+                if let handle = FileHandle(forWritingAtPath: "/tmp/gtp_debug.log") {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                FileManager.default.createFile(atPath: "/tmp/gtp_debug.log", contents: data)
+            }
+        }
+    }
+
+    /// Enrich windows with workstream names, shell cwd, and Claude process detection (async)
+    private func enrichWindowsAsync(_ windows: [GhosttyWindow]) {
+        debugLog("enrichWindowsAsync called with \(windows.count) windows")
+        debugLog("themeManager is \(themeManager == nil ? "nil" : "set")")
+
+        let logFunc = self.debugLog
+        DispatchQueue.global(qos: .userInitiated).async { [weak viewModel, weak themeManager] in
+            logFunc("Inside async block, viewModel=\(viewModel == nil ? "nil" : "set"), themeManager=\(themeManager == nil ? "nil" : "set")")
+            guard let viewModel = viewModel else {
+                logFunc("viewModel is nil, returning")
+                return
+            }
+
+            // Set debug logging on viewModel
+            viewModel.debugLog = logFunc
+
+            // Load process tree data once (single ps call)
+            viewModel.loadProcessCache()
+            logFunc("Process cache loaded with \(viewModel.cachedProcessTree.count) entries")
+
+            // Debug: show relevant entries for our window PIDs
+            for window in windows {
+                let children = viewModel.cachedProcessTree.filter { $0.value.ppid == window.pid }
+                logFunc("  Children of PID \(window.pid): \(children.map { "(\($0.key): \($0.value.comm))" }.joined(separator: ", "))")
+            }
+
+            let enriched = windows.map { window -> GhosttyWindow in
+                var enriched = window
+
+                // Get shell working directory
+                enriched.shellCwd = viewModel.getShellCwd(ghosttyPid: window.pid)
+
+                // Get workstream name (from PID cache or directory match)
+                enriched.workstreamName = themeManager?.workstreamNameForPID(window.pid, shellCwd: enriched.shellCwd)
+
+                // Check for Claude process
+                enriched.hasClaudeProcess = viewModel.hasClaudeProcess(ghosttyPid: window.pid)
+
+                return enriched
+            }
+
+            logFunc("Enrichment complete. Windows with workstream names:")
+            for w in enriched {
+                logFunc("  PID \(w.pid): ws=\(w.workstreamName ?? "nil"), cwd=\(w.shellCwd ?? "nil")")
+            }
+
+            // Update UI on main thread
+            DispatchQueue.main.async {
+                logFunc("Updating UI with enriched windows")
+                viewModel.windows = enriched
+            }
+        }
+    }
+
+    private func loadWindowsViaCGWindowList() {
+        // Use CGWindowList API to get Ghostty windows (fallback method)
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return
+        }
+
+        var ghosttyWindows: [GhosttyWindow] = []
+        var perProcessIndices: [pid_t: Int] = [:]  // Track per-process window indices
+
+        for window in windowList {
+            guard let ownerName = window["kCGWindowOwnerName"] as? String,
+                  ownerName.lowercased() == "ghostty",
+                  let ownerPID = window["kCGWindowOwnerPID"] as? Int else {
+                continue
+            }
+
+            let pid = pid_t(ownerPID)
+            let name = window["kCGWindowName"] as? String ?? "Window \(ghosttyWindows.count + 1)"
+            let windowNumber = window["kCGWindowNumber"] as? Int ?? ghosttyWindows.count + 1
+
+            // Track per-process window index (1-based)
+            let perProcessIndex = (perProcessIndices[pid] ?? 0) + 1
+            perProcessIndices[pid] = perProcessIndex
+
+            ghosttyWindows.append(GhosttyWindow(id: windowNumber, name: name, axIndex: perProcessIndex, pid: pid))
+        }
+
+        // Show windows immediately
+        viewModel.windows = ghosttyWindows
+
+        // Reset selection if out of bounds
+        if viewModel.selectedIndex >= ghosttyWindows.count {
+            viewModel.selectedIndex = 0
+        }
+
+        // Enrich windows async
+        enrichWindowsAsync(ghosttyWindows)
     }
 }
 
@@ -830,6 +1648,15 @@ struct WorkstreamEditorView: View {
                             }
                             .pickerStyle(.segmented)
                             .frame(width: 150)
+
+                            Button {
+                                if let randomTheme = filteredThemes.randomElement() {
+                                    selectedTheme = randomTheme
+                                }
+                            } label: {
+                                Image(systemName: "dice")
+                            }
+                            .help("Pick random theme")
                         }
 
                         Text("\(filteredThemes.count) themes")
@@ -990,5 +1817,22 @@ struct WorkstreamEditorView: View {
             )
         }
         onDismiss()
+    }
+}
+
+// Helper extension for debug logging
+extension String {
+    func appendToFile(atPath path: String) throws {
+        let fileManager = FileManager.default
+        if !fileManager.fileExists(atPath: path) {
+            try self.write(toFile: path, atomically: true, encoding: .utf8)
+        } else {
+            let fileHandle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            fileHandle.seekToEndOfFile()
+            if let data = self.data(using: .utf8) {
+                fileHandle.write(data)
+            }
+            fileHandle.closeFile()
+        }
     }
 }

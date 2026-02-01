@@ -9,8 +9,21 @@ A great way to run multiple [Claude Code](https://github.com/anthropics/claude-c
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
 
+## Permissions & Privacy
+
+This app requests the following macOS permissions:
+
+| Permission | Why We Need It | How We Use It |
+|------------|----------------|---------------|
+| **Screen Recording** | To read window names from Ghostty | The Window Switcher feature (⌃⌥P) uses macOS's CGWindowList API to display the actual names of your open Ghostty windows. Without this permission, windows would show as "Window 1", "Window 2" instead of their actual titles. **We do not record, capture, or store any screen content.** This permission only allows us to read window metadata (names and positions) from the system. |
+
+**Data Collection:** This app does not collect, transmit, or share any data. All settings (themes, workstreams, favorites) are stored locally on your Mac using macOS UserDefaults. No analytics, no telemetry, no network requests (except to run `ghostty +list-themes` locally).
+
+**Open Source:** The complete source code is available in this repository. You can review exactly what the app does and build it yourself if preferred.
+
 ## Features
 
+- **Window Switcher** - Press ⌃⌥P from anywhere to quickly switch between open Ghostty windows
 - **Global Hotkey** - Press ⌃⌥G from anywhere to open Quick Launch panel
 - **Random Theme** - Launch Ghostty with a random theme (⌘R) - automatically avoids recent themes
 - **Workstreams** - Named presets with themes, directories, commands, and auto-launch
@@ -38,6 +51,39 @@ Press **Control + Option + G** from anywhere to instantly open the Quick Launch 
 - **Recent** - Recently used themes
 
 Select an option to launch Ghostty, or press **Esc** to close. No need to click the menu bar!
+
+### Window Switcher (⌃⌥P)
+
+Press **Control + Option + P** from anywhere to instantly see and switch between all your open Ghostty windows:
+
+- **Claude state detection** - Windows where Claude is waiting for input (showing `✳`) appear at the top
+- **Smart sorting** - Windows sorted by: Needs Input → Claude Running → Working → Other
+- **Workstream matching** - Windows automatically matched to workstreams by working directory
+- **Search windows** - Type to filter by window name or workstream name
+- **Click to focus** - Select any window to bring it to the front
+
+**Claude Code Integration:**
+
+The Window Switcher detects Claude Code's state by reading the window title:
+- `✳ Claude Code` = **Needs Input** (sorted to top with hourglass icon)
+- `⠐ Claude Code` (spinner) = **Working** (shown with gear icon)
+- Claude process detected = **Claude** badge (when title detection unavailable)
+
+This works automatically when Claude Code sets dynamic window titles. Workstreams launched from this app don't use `--title`, allowing Claude to control the title and show its status.
+
+**Workstream Detection:**
+
+Windows are matched to workstreams in two ways:
+1. **By PID** - Windows launched from this app are tracked automatically
+2. **By directory** - Windows opened manually are matched by their working directory to workstream configurations
+
+**First time setup:** The Window Switcher requires **Screen Recording** permission to read window names from macOS. When you first press ⌃⌥P, you'll see a permission prompt with:
+- **Open System Settings** button - Takes you directly to Privacy & Security settings
+- **Retry** button - Re-checks permission after you grant it
+
+This permission only allows the app to read window metadata (names and positions). We do not record, capture, or store any screen content.
+
+**Perfect for multiple Claude sessions:** When running several Claude Code workstreams, the Window Switcher shows which sessions need your attention, letting you jump to them instantly without alt-tabbing through all your other apps.
 
 ### Workstreams
 
@@ -109,6 +155,7 @@ Great for sharing setups with teammates or backing up your configuration.
 | Shortcut | Action |
 |----------|--------|
 | ⌃⌥G | Open Quick Launch panel (global - works from any app) |
+| ⌃⌥P | Open Window Switcher (global - works from any app) |
 | ⌘R | Launch with random theme (from menu) |
 | ⌘, | Manage Workstreams |
 | ⌘Q | Quit |
@@ -144,12 +191,13 @@ Note: Splits are created within Ghostty, not via CLI options. Each split shares 
 
 ### Tips for Multiple Claude Sessions
 
-1. **Distinct themes are automatic** - Random Theme automatically excludes your last 5 themes, so each new session looks different
-2. **Set window titles** - Include the project name in the title for easy switching
-3. **Use the command field** - Set `claude` to auto-start Claude Code when the terminal opens
-4. **Organize by project** - Create one workstream per project with its directory pre-configured
-5. **Use splits for related work** - Within a single themed window, use ⌘D to split for related tasks (e.g., running tests while coding)
-6. **Auto-launch your daily setup** - Enable auto-launch on your most-used workstreams to open them automatically when the app starts
+1. **Use the Window Switcher (⌃⌥P)** - Instantly jump between your Claude sessions without alt-tabbing through all your apps
+2. **Distinct themes are automatic** - Random Theme automatically excludes your last 5 themes, so each new session looks different
+3. **Set window titles** - Include the project name in the title for easy identification in the Window Switcher
+4. **Use the command field** - Set `claude` to auto-start Claude Code when the terminal opens
+5. **Organize by project** - Create one workstream per project with its directory pre-configured
+6. **Use splits for related work** - Within a single themed window, use ⌘D to split for related tasks (e.g., running tests while coding)
+7. **Auto-launch your daily setup** - Enable auto-launch on your most-used workstreams to open them automatically when the app starts
 
 ## Installation
 
