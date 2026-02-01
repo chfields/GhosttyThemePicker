@@ -45,45 +45,359 @@ struct GhosttyThemePickerApp: App {
 
 class HotkeyManager: ObservableObject {
     var themeManager: ThemeManager?
-    private var hotkeyRef: EventHotKeyRef?
-    private static var instance: HotkeyManager?
+    private var hotkeyRefG: EventHotKeyRef?
+    private var hotkeyRefP: EventHotKeyRef?
+    static var instance: HotkeyManager?
 
     func registerHotkey() {
         HotkeyManager.instance = self
 
-        // Register Control+Option+G using Carbon API
-        var hotKeyID = EventHotKeyID()
-        hotKeyID.signature = OSType(0x4754504B) // "GTPK" - GhosttyThemePickerKey
-        hotKeyID.id = 1
-
-        // G = keycode 5, Control+Option = controlKey + optionKey
         let modifiers: UInt32 = UInt32(controlKey | optionKey)
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
 
         InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
-            HotkeyManager.instance?.handleHotkey()
+            var hotKeyID = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+
+            if hotKeyID.id == 1 {
+                HotkeyManager.instance?.handleHotkeyG()
+            } else if hotKeyID.id == 2 {
+                HotkeyManager.instance?.handleHotkeyP()
+            }
             return noErr
         }, 1, &eventType, nil, nil)
 
-        let status = RegisterEventHotKey(5, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotkeyRef)
+        // Register Control+Option+G (Quick Launch)
+        var hotKeyIDG = EventHotKeyID()
+        hotKeyIDG.signature = OSType(0x4754504B) // "GTPK"
+        hotKeyIDG.id = 1
+        let statusG = RegisterEventHotKey(5, modifiers, hotKeyIDG, GetApplicationEventTarget(), 0, &hotkeyRefG) // G = keycode 5
 
-        if status == noErr {
-            print("Global hotkey registered: ⌃⌥G (Carbon)")
-        } else {
-            print("Failed to register hotkey: \(status)")
+        // Register Control+Option+P (Window Switcher)
+        var hotKeyIDP = EventHotKeyID()
+        hotKeyIDP.signature = OSType(0x4754504B) // "GTPK"
+        hotKeyIDP.id = 2
+        let statusP = RegisterEventHotKey(35, modifiers, hotKeyIDP, GetApplicationEventTarget(), 0, &hotkeyRefP) // P = keycode 35
+
+        if statusG == noErr {
+            print("Global hotkey registered: ⌃⌥G (Quick Launch)")
+        }
+        if statusP == noErr {
+            print("Global hotkey registered: ⌃⌥P (Window Switcher)")
         }
     }
 
-    private func handleHotkey() {
+    private func handleHotkeyG() {
         DispatchQueue.main.async {
             QuickLaunchPanel.shared.show(themeManager: self.themeManager)
         }
     }
 
+    private func handleHotkeyP() {
+        DispatchQueue.main.async {
+            WindowSwitcherPanel.shared.show()
+        }
+    }
+
     deinit {
-        if let ref = hotkeyRef {
+        if let ref = hotkeyRefG {
             UnregisterEventHotKey(ref)
+        }
+        if let ref = hotkeyRefP {
+            UnregisterEventHotKey(ref)
+        }
+    }
+}
+
+// MARK: - Window Switcher Panel
+
+class WindowSwitcherPanel {
+    static let shared = WindowSwitcherPanel()
+    private var panel: NSPanel?
+
+    func show() {
+        if let existing = panel {
+            existing.close()
+        }
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isReleasedWhenClosed = false
+        panel.backgroundColor = NSColor.windowBackgroundColor
+
+        let view = WindowSwitcherView(themeManager: HotkeyManager.instance?.themeManager) {
+            panel.close()
+        }
+
+        panel.contentView = NSHostingView(rootView: view)
+        panel.center()
+
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        self.panel = panel
+    }
+
+    func close() {
+        panel?.close()
+        panel = nil
+    }
+}
+
+// MARK: - Window Switcher View
+
+struct GhosttyWindow: Identifiable {
+    let id: Int
+    let name: String
+    let axIndex: Int  // Index for AppleScript (1-based)
+}
+
+struct WindowSwitcherView: View {
+    @State private var windows: [GhosttyWindow] = []
+    @State private var searchText: String = ""
+    @State private var selectedIndex: Int = 0
+    @State private var hasScreenRecordingPermission: Bool = false
+    var themeManager: ThemeManager?
+    var onDismiss: (() -> Void)?
+
+    init(themeManager: ThemeManager? = nil, onDismiss: (() -> Void)? = nil) {
+        self.themeManager = themeManager
+        self.onDismiss = onDismiss
+    }
+
+    // Check if Screen Recording permission is granted
+    private func checkPermissions() {
+        hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+    }
+
+    // Find workstream name that matches a window title
+    func workstreamName(for windowTitle: String) -> String? {
+        guard let manager = themeManager else { return nil }
+        return manager.workstreams.first { ws in
+            ws.windowTitle == windowTitle
+        }?.name
+    }
+
+    var filteredWindows: [GhosttyWindow] {
+        if searchText.isEmpty {
+            return windows
+        }
+        return windows.filter { window in
+            window.name.localizedCaseInsensitiveContains(searchText) ||
+            (workstreamName(for: window.name)?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Image(systemName: "macwindow.on.rectangle")
+                    .foregroundColor(.accentColor)
+                Text("Switch Window")
+                    .font(.headline)
+                Spacer()
+                Text("⌃⌥P")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .background(Color(NSColor.controlBackgroundColor))
+
+            Divider()
+
+            // Search field
+            TextField("Search windows...", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+            // Window list
+            if !hasScreenRecordingPermission {
+                VStack(spacing: 16) {
+                    Spacer()
+                    Image(systemName: "eye.trianglebadge.exclamationmark")
+                        .font(.system(size: 40))
+                        .foregroundColor(.orange)
+
+                    Text("Screen Recording Permission Required")
+                        .font(.headline)
+
+                    Text("Window names require Screen Recording permission to be displayed.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+
+                    VStack(spacing: 8) {
+                        Button {
+                            // Open System Settings to Privacy & Security > Screen Recording
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "gear")
+                                Text("Open System Settings")
+                            }
+                        }
+
+                        Button {
+                            checkPermissions()
+                            if hasScreenRecordingPermission {
+                                loadWindows()
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.clockwise")
+                                Text("Retry")
+                            }
+                        }
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else if filteredWindows.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(windows.isEmpty ? "No Ghostty windows open" : "No matching windows")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(Array(filteredWindows.enumerated()), id: \.element.id) { index, window in
+                            Button {
+                                focusWindow(axIndex: window.axIndex)
+                                onDismiss?()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "terminal")
+                                        .foregroundColor(.accentColor)
+                                    if let wsName = workstreamName(for: window.name) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(wsName)
+                                                .fontWeight(.medium)
+                                            Text(window.name)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    } else {
+                                        Text(window.name)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                                .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                }
+            }
+
+            Divider()
+
+            // Footer
+            HStack {
+                Text("Press Esc to close")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(windows.count) window\(windows.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(8)
+        }
+        .frame(width: 400, height: 300)
+        .onAppear {
+            checkPermissions()
+            if hasScreenRecordingPermission {
+                loadWindows()
+            } else {
+                // Request permission (will show system dialog)
+                CGRequestScreenCaptureAccess()
+            }
+        }
+        .onExitCommand {
+            onDismiss?()
+        }
+    }
+
+    private func loadWindows() {
+        // Use CGWindowList API to get Ghostty windows
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return
+        }
+
+        var ghosttyWindows: [GhosttyWindow] = []
+        var windowIndex = 1
+
+        for window in windowList {
+            guard let ownerName = window["kCGWindowOwnerName"] as? String,
+                  ownerName == "Ghostty" else {
+                continue
+            }
+
+            let name = window["kCGWindowName"] as? String ?? "Window \(windowIndex)"
+            let windowNumber = window["kCGWindowNumber"] as? Int ?? windowIndex
+
+            ghosttyWindows.append(GhosttyWindow(id: windowNumber, name: name, axIndex: windowIndex))
+            windowIndex += 1
+        }
+
+        self.windows = ghosttyWindows
+    }
+
+    private func focusWindow(axIndex: Int) {
+        let script = """
+        tell application "System Events"
+            tell process "ghostty"
+                set frontmost to true
+                perform action "AXRaise" of window \(axIndex)
+            end tell
+        end tell
+        """
+
+        let process = Process()
+        let errorPipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            // Check for errors
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            if let errorOutput = String(data: errorData, encoding: .utf8), !errorOutput.isEmpty {
+                print("Focus window error: \(errorOutput)")
+            }
+        } catch {
+            print("Failed to focus window: \(error)")
         }
     }
 }
