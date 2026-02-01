@@ -764,9 +764,7 @@ struct WindowSwitcherView: View {
             return false
         }
 
-        // Enrich windows with workstream names, shell cwd, and Claude detection
-        ghosttyWindows = enrichWindows(ghosttyWindows)
-
+        // Show windows immediately (without enrichment)
         viewModel.windows = ghosttyWindows
 
         // Reset selection if out of bounds
@@ -774,28 +772,40 @@ struct WindowSwitcherView: View {
             viewModel.selectedIndex = 0
         }
 
+        // Enrich windows async so UI doesn't block
+        enrichWindowsAsync(ghosttyWindows)
+
         print("Successfully loaded \(ghosttyWindows.count) windows via Accessibility API")
         return true
     }
 
-    /// Enrich windows with workstream names, shell cwd, and Claude process detection
-    private func enrichWindows(_ windows: [GhosttyWindow]) -> [GhosttyWindow] {
-        // Load process tree data once (single ps call)
-        viewModel.loadProcessCache()
+    /// Enrich windows with workstream names, shell cwd, and Claude process detection (async)
+    private func enrichWindowsAsync(_ windows: [GhosttyWindow]) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak viewModel, weak themeManager] in
+            guard let viewModel = viewModel else { return }
 
-        return windows.map { window in
-            var enriched = window
+            // Load process tree data once (single ps call)
+            viewModel.loadProcessCache()
 
-            // Get shell working directory
-            enriched.shellCwd = viewModel.getShellCwd(ghosttyPid: window.pid)
+            let enriched = windows.map { window -> GhosttyWindow in
+                var enriched = window
 
-            // Get workstream name (from PID cache or directory match)
-            enriched.workstreamName = themeManager?.workstreamNameForPID(window.pid, shellCwd: enriched.shellCwd)
+                // Get shell working directory
+                enriched.shellCwd = viewModel.getShellCwd(ghosttyPid: window.pid)
 
-            // Check for Claude process
-            enriched.hasClaudeProcess = viewModel.hasClaudeProcess(ghosttyPid: window.pid)
+                // Get workstream name (from PID cache or directory match)
+                enriched.workstreamName = themeManager?.workstreamNameForPID(window.pid, shellCwd: enriched.shellCwd)
 
-            return enriched
+                // Check for Claude process
+                enriched.hasClaudeProcess = viewModel.hasClaudeProcess(ghosttyPid: window.pid)
+
+                return enriched
+            }
+
+            // Update UI on main thread
+            DispatchQueue.main.async {
+                viewModel.windows = enriched
+            }
         }
     }
 
@@ -827,15 +837,16 @@ struct WindowSwitcherView: View {
             ghosttyWindows.append(GhosttyWindow(id: windowNumber, name: name, axIndex: perProcessIndex, pid: pid))
         }
 
-        // Enrich windows with workstream names, shell cwd, and Claude detection
-        ghosttyWindows = enrichWindows(ghosttyWindows)
-
+        // Show windows immediately
         viewModel.windows = ghosttyWindows
 
         // Reset selection if out of bounds
         if viewModel.selectedIndex >= ghosttyWindows.count {
             viewModel.selectedIndex = 0
         }
+
+        // Enrich windows async
+        enrichWindowsAsync(ghosttyWindows)
     }
 }
 

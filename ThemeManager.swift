@@ -160,7 +160,12 @@ class ThemeManager: ObservableObject {
         // Legacy windowTitle field is preserved for backwards compatibility but not used.
 
         if let cmd = workstream.command, !cmd.isEmpty {
+            // Wrap command in interactive login shell so PATH is resolved correctly
+            // Ghostty's -e passes directly to login which doesn't resolve PATH
+            // -i = interactive (sources .zshrc), -l = login (sources .zprofile)
             args.append("-e")
+            args.append("/bin/zsh")
+            args.append("-ilc")
             args.append(cmd)
         }
 
