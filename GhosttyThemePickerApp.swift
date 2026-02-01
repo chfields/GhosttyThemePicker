@@ -1,5 +1,6 @@
 import SwiftUI
 import Carbon
+import ApplicationServices
 
 @main
 struct GhosttyThemePickerApp: App {
@@ -172,7 +173,8 @@ class WindowSwitcherPanel {
 struct GhosttyWindow: Identifiable {
     let id: Int
     let name: String
-    let axIndex: Int  // Index for AppleScript (1-based)
+    let axIndex: Int  // Index for AppleScript (1-based, per-process)
+    let pid: pid_t    // Process ID this window belongs to
 }
 
 class WindowSwitcherViewModel: ObservableObject {
@@ -201,7 +203,8 @@ class WindowSwitcherViewModel: ObservableObject {
             selectedIndex = (selectedIndex - 1 + filteredWindows.count) % filteredWindows.count
             return true
         case 36, 76: // Enter/Return
-            focusWindow(axIndex: filteredWindows[selectedIndex].axIndex)
+            let window = filteredWindows[selectedIndex]
+            focusWindow(axIndex: window.axIndex, pid: window.pid)
             onDismiss?()
             return true
         default:
@@ -209,35 +212,30 @@ class WindowSwitcherViewModel: ObservableObject {
         }
     }
 
-    func focusWindow(axIndex: Int) {
-        let script = """
-        tell application "System Events"
-            tell process "ghostty"
-                set frontmost to true
-                perform action "AXRaise" of window \(axIndex)
-            end tell
-        end tell
-        """
-
-        let process = Process()
-        let errorPipe = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errorPipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            if let errorOutput = String(data: errorData, encoding: .utf8), !errorOutput.isEmpty {
-                print("Focus window error: \(errorOutput)")
-            }
-        } catch {
-            print("Failed to focus window: \(error)")
+    func focusWindow(axIndex: Int, pid: pid_t) {
+        // Use NSRunningApplication to activate the specific process by PID
+        guard let app = NSRunningApplication(processIdentifier: pid) else {
+            print("Could not find application with PID \(pid)")
+            return
         }
+
+        // Activate the specific process
+        app.activate(options: [.activateIgnoringOtherApps])
+
+        // Use Accessibility API to raise the specific window
+        let appElement = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+        guard result == .success,
+              let windows = windowsRef as? [AXUIElement],
+              axIndex > 0 && axIndex <= windows.count else {
+            print("Could not get window \(axIndex) for PID \(pid)")
+            return
+        }
+
+        let windowElement = windows[axIndex - 1]  // axIndex is 1-based
+        AXUIElementPerformAction(windowElement, kAXRaiseAction as CFString)
     }
 }
 
@@ -349,7 +347,7 @@ struct WindowSwitcherView: View {
                         VStack(spacing: 4) {
                             ForEach(Array(viewModel.filteredWindows.enumerated()), id: \.element.id) { index, window in
                                 Button {
-                                    viewModel.focusWindow(axIndex: window.axIndex)
+                                    viewModel.focusWindow(axIndex: window.axIndex, pid: window.pid)
                                     onDismiss?()
                                 } label: {
                                     HStack {
@@ -434,26 +432,113 @@ struct WindowSwitcherView: View {
     }
 
     private func loadWindows() {
-        // Use CGWindowList API to get Ghostty windows
+        // Try to load windows using Accessibility API first (correct order for AppleScript)
+        if loadWindowsViaAccessibilityAPI() {
+            return
+        }
+
+        // Fall back to CGWindowList API if Accessibility fails
+        print("Falling back to CGWindowList API")
+        loadWindowsViaCGWindowList()
+    }
+
+    private func loadWindowsViaAccessibilityAPI() -> Bool {
+        // Get ALL Ghostty processes (not just the first one)
+        let runningApps = NSWorkspace.shared.runningApplications
+        let ghosttyApps = runningApps.filter { $0.localizedName?.lowercased() == "ghostty" }
+
+        guard !ghosttyApps.isEmpty else {
+            print("No Ghostty processes found")
+            return false
+        }
+
+        print("Found \(ghosttyApps.count) Ghostty process(es)")
+
+        // Debug logging to file
+        let logPath = "/tmp/ghostty_picker_debug.log"
+        let timestamp = Date()
+        try? "[\(timestamp)] Found \(ghosttyApps.count) Ghostty process(es)\n".write(toFile: logPath, atomically: false, encoding: .utf8)
+
+        var ghosttyWindows: [GhosttyWindow] = []
+
+        // Query windows from each Ghostty process
+        for ghosttyApp in ghosttyApps {
+            let pid = ghosttyApp.processIdentifier
+            let appElement = AXUIElementCreateApplication(pid)
+
+            // Query windows from this specific process
+            var windowsRef: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+
+            guard result == .success,
+                  let windows = windowsRef as? [AXUIElement] else {
+                print("Failed to get accessibility windows for PID \(pid) (error: \(result.rawValue))")
+                try? "  PID \(pid): FAILED (error: \(result.rawValue))\n".appendToFile(atPath: logPath)
+                continue  // Skip this process, try others
+            }
+
+            print("Process PID \(pid) returned \(windows.count) window(s)")
+            try? "  PID \(pid): \(windows.count) window(s)\n".appendToFile(atPath: logPath)
+
+            // Enumerate windows from this process (1-based index per process)
+            for (perProcessIndex, windowElement) in windows.enumerated() {
+                // Get window title
+                var titleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(windowElement, kAXTitleAttribute as CFString, &titleRef)
+                let title = (titleRef as? String) ?? "Window \(ghosttyWindows.count + 1)"
+
+                // Use a unique ID based on current count, but axIndex is per-process (1-based)
+                let id = ghosttyWindows.count + 1
+                ghosttyWindows.append(GhosttyWindow(id: id, name: title, axIndex: perProcessIndex + 1, pid: pid))
+            }
+        }
+
+        print("Extracted \(ghosttyWindows.count) total Ghostty windows from Accessibility API")
+        try? "  TOTAL: \(ghosttyWindows.count) windows\n".appendToFile(atPath: logPath)
+
+        // Only return true if we actually found windows
+        guard !ghosttyWindows.isEmpty else {
+            print("Accessibility API returned empty window list - using CGWindowList fallback")
+            return false
+        }
+
+        viewModel.windows = ghosttyWindows
+
+        // Reset selection if out of bounds
+        if viewModel.selectedIndex >= ghosttyWindows.count {
+            viewModel.selectedIndex = 0
+        }
+
+        print("Successfully loaded \(ghosttyWindows.count) windows via Accessibility API")
+        return true
+    }
+
+    private func loadWindowsViaCGWindowList() {
+        // Use CGWindowList API to get Ghostty windows (fallback method)
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return
         }
 
         var ghosttyWindows: [GhosttyWindow] = []
-        var windowIndex = 1
+        var perProcessIndices: [pid_t: Int] = [:]  // Track per-process window indices
 
         for window in windowList {
             guard let ownerName = window["kCGWindowOwnerName"] as? String,
-                  ownerName == "Ghostty" else {
+                  ownerName.lowercased() == "ghostty",
+                  let ownerPID = window["kCGWindowOwnerPID"] as? Int else {
                 continue
             }
 
-            let name = window["kCGWindowName"] as? String ?? "Window \(windowIndex)"
-            let windowNumber = window["kCGWindowNumber"] as? Int ?? windowIndex
+            let pid = pid_t(ownerPID)
+            let name = window["kCGWindowName"] as? String ?? "Window \(ghosttyWindows.count + 1)"
+            let windowNumber = window["kCGWindowNumber"] as? Int ?? ghosttyWindows.count + 1
 
-            ghosttyWindows.append(GhosttyWindow(id: windowNumber, name: name, axIndex: windowIndex))
-            windowIndex += 1
+            // Track per-process window index (1-based)
+            let perProcessIndex = (perProcessIndices[pid] ?? 0) + 1
+            perProcessIndices[pid] = perProcessIndex
+
+            ghosttyWindows.append(GhosttyWindow(id: windowNumber, name: name, axIndex: perProcessIndex, pid: pid))
         }
 
         viewModel.windows = ghosttyWindows
@@ -1376,5 +1461,22 @@ struct WorkstreamEditorView: View {
             )
         }
         onDismiss()
+    }
+}
+
+// Helper extension for debug logging
+extension String {
+    func appendToFile(atPath path: String) throws {
+        let fileManager = FileManager.default
+        if !fileManager.fileExists(atPath: path) {
+            try self.write(toFile: path, atomically: true, encoding: .utf8)
+        } else {
+            let fileHandle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            fileHandle.seekToEndOfFile()
+            if let data = self.data(using: .utf8) {
+                fileHandle.write(data)
+            }
+            fileHandle.closeFile()
+        }
     }
 }
