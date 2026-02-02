@@ -201,6 +201,15 @@ Note: Splits are created within Ghostty, not via CLI options. Each split shares 
 
 ## Installation
 
+### Homebrew (Recommended)
+
+```bash
+brew tap chfields/tap
+brew install --cask ghostty-theme-picker
+```
+
+### Manual Download
+
 1. Download `GhosttyThemePicker.dmg` from the [Releases](../../releases) page
 2. Open the DMG and drag `GhosttyThemePicker.app` to Applications
 3. Launch from Applications or Spotlight

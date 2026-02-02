@@ -60,3 +60,42 @@ This approach works better than `NSEvent.addLocalMonitorForEvents` because:
 - Local monitors see events AFTER focused views process them
 - TextField consumes arrow keys for cursor movement before monitor sees them
 - Panel-level interception happens BEFORE responder chain processing
+
+## Releasing New Versions
+
+### 1. Build Release DMG
+```bash
+xcodebuild -scheme GhosttyThemePicker -configuration Release -derivedDataPath build clean build
+mkdir -p /tmp/dmg-staging
+cp -r build/Build/Products/Release/GhosttyThemePicker.app /tmp/dmg-staging/
+hdiutil create -volname "GhosttyThemePicker" -srcfolder /tmp/dmg-staging -ov -format UDZO /tmp/GhosttyThemePicker.dmg
+```
+
+### 2. Create GitHub Release
+```bash
+# Tag the release
+git tag -a v1.X.0 -m "v1.X.0 - Description"
+git push origin v1.X.0
+
+# Create release with DMG
+gh release create v1.X.0 /tmp/GhosttyThemePicker.dmg --title "v1.X.0 - Title" --notes "Release notes here"
+```
+
+### 3. Update Homebrew Cask
+```bash
+# Calculate SHA256 of the new DMG
+shasum -a 256 /tmp/GhosttyThemePicker.dmg
+
+# Update the cask formula in homebrew-tap repo
+cd /path/to/homebrew-tap
+# Edit Casks/ghostty-theme-picker.rb:
+#   - Update `version "1.X.0"`
+#   - Update `sha256 "new-checksum-here"`
+git add Casks/ghostty-theme-picker.rb
+git commit -m "Update ghostty-theme-picker to v1.X.0"
+git push
+```
+
+### Homebrew Tap
+- **Repo:** https://github.com/chfields/homebrew-tap
+- **Install:** `brew install --cask chfields/tap/ghostty-theme-picker`
