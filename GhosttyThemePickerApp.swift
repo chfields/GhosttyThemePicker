@@ -432,6 +432,49 @@ class WindowSwitcherViewModel: ObservableObject {
     private var cachedShellCwds: [pid_t: String] = [:]
     var debugLog: ((String) -> Void)?  // Debug logging callback
 
+    // MARK: - Workstream Name Cache (persists across Window Switcher opens)
+    // Maps PID to workstream name. Value of nil means "checked, no match".
+    // This cache is NOT cleared on each open - it persists to make repeat opens instant.
+    private var workstreamCache: [pid_t: String?] = [:]
+
+    /// Apply cached workstream names to windows (for immediate display)
+    func applyCachedWorkstreamNames(to windows: inout [GhosttyWindow]) {
+        for i in windows.indices {
+            let pid = windows[i].pid
+            // Check app-launched windows first (always authoritative)
+            if let name = themeManager?.launchedWindows[pid] {
+                windows[i].workstreamName = name
+            }
+            // Then check our runtime cache
+            else if let cached = workstreamCache[pid], let name = cached {
+                windows[i].workstreamName = name
+            }
+        }
+    }
+
+    /// Check if a window needs workstream enrichment
+    func needsWorkstreamEnrichment(pid: pid_t) -> Bool {
+        // Already in app-launched cache
+        if themeManager?.launchedWindows[pid] != nil {
+            return false
+        }
+        // Already in our workstream cache (even if nil = no match)
+        if workstreamCache.keys.contains(pid) {
+            return false
+        }
+        return true
+    }
+
+    /// Cache a workstream lookup result
+    func cacheWorkstreamName(_ name: String?, forPid pid: pid_t) {
+        workstreamCache[pid] = name
+    }
+
+    /// Clean up cache entries for PIDs that no longer exist
+    func cleanupWorkstreamCache(activePids: Set<pid_t>) {
+        workstreamCache = workstreamCache.filter { activePids.contains($0.key) }
+    }
+
     /// Load all process data in one shot for efficient lookups
     func loadProcessCache() {
         cachedProcessTree.removeAll()
@@ -927,7 +970,14 @@ struct WindowSwitcherView: View {
             return false
         }
 
-        // Show windows immediately (without enrichment)
+        // Apply cached workstream names BEFORE displaying (makes repeat opens instant)
+        viewModel.applyCachedWorkstreamNames(to: &ghosttyWindows)
+
+        // Clean up cache for windows that no longer exist
+        let activePids = Set(ghosttyWindows.map { $0.pid })
+        viewModel.cleanupWorkstreamCache(activePids: activePids)
+
+        // Show windows immediately with cached data
         viewModel.windows = ghosttyWindows
 
         // Reset selection if out of bounds
@@ -935,7 +985,7 @@ struct WindowSwitcherView: View {
             viewModel.selectedIndex = 0
         }
 
-        // Enrich windows async so UI doesn't block
+        // Enrich only windows that need it (skips cached ones)
         enrichWindowsAsync(ghosttyWindows)
 
         print("Successfully loaded \(ghosttyWindows.count) windows via Accessibility API")
@@ -962,6 +1012,14 @@ struct WindowSwitcherView: View {
         debugLog("enrichWindowsAsync called with \(windows.count) windows")
         debugLog("themeManager is \(themeManager == nil ? "nil" : "set")")
 
+        // Check which windows actually need workstream enrichment (expensive lsof calls)
+        let windowsNeedingEnrichment = windows.filter { viewModel.needsWorkstreamEnrichment(pid: $0.pid) }
+        debugLog("\(windowsNeedingEnrichment.count) of \(windows.count) windows need workstream enrichment")
+
+        // If no windows need enrichment, we can skip the slow parts
+        // But we still need to check Claude process status (uses cached process tree)
+        let needsFullEnrichment = !windowsNeedingEnrichment.isEmpty
+
         let logFunc = self.debugLog
         DispatchQueue.global(qos: .userInitiated).async { [weak viewModel, weak themeManager] in
             logFunc("Inside async block, viewModel=\(viewModel == nil ? "nil" : "set"), themeManager=\(themeManager == nil ? "nil" : "set")")
@@ -973,7 +1031,7 @@ struct WindowSwitcherView: View {
             // Set debug logging on viewModel
             viewModel.debugLog = logFunc
 
-            // Load process tree data once (single ps call)
+            // Load process tree data once (single ps call) - needed for Claude detection
             viewModel.loadProcessCache()
             logFunc("Process cache loaded with \(viewModel.cachedProcessTree.count) entries")
 
@@ -986,13 +1044,23 @@ struct WindowSwitcherView: View {
             let enriched = windows.map { window -> GhosttyWindow in
                 var enriched = window
 
-                // Get shell working directory
-                enriched.shellCwd = viewModel.getShellCwd(ghosttyPid: window.pid)
+                // Only do expensive lsof lookup if this window needs workstream enrichment
+                if viewModel.needsWorkstreamEnrichment(pid: window.pid) {
+                    // Get shell working directory (expensive - calls lsof)
+                    enriched.shellCwd = viewModel.getShellCwd(ghosttyPid: window.pid)
 
-                // Get workstream name (from PID cache or directory match)
-                enriched.workstreamName = themeManager?.workstreamNameForPID(window.pid, shellCwd: enriched.shellCwd)
+                    // Get workstream name (from directory match)
+                    let wsName = themeManager?.workstreamNameForPID(window.pid, shellCwd: enriched.shellCwd)
+                    enriched.workstreamName = wsName
 
-                // Check for Claude process
+                    // Cache the result for next time (even if nil)
+                    viewModel.cacheWorkstreamName(wsName, forPid: window.pid)
+                    logFunc("Cached workstream for PID \(window.pid): \(wsName ?? "nil")")
+                }
+                // If workstream was already set from cache, keep it
+                // (workstreamName was already populated by applyCachedWorkstreamNames)
+
+                // Check for Claude process (uses cached process tree, fast)
                 enriched.hasClaudeProcess = viewModel.hasClaudeProcess(ghosttyPid: window.pid)
 
                 return enriched
@@ -1000,7 +1068,7 @@ struct WindowSwitcherView: View {
 
             logFunc("Enrichment complete. Windows with workstream names:")
             for w in enriched {
-                logFunc("  PID \(w.pid): ws=\(w.workstreamName ?? "nil"), cwd=\(w.shellCwd ?? "nil")")
+                logFunc("  PID \(w.pid): ws=\(w.workstreamName ?? "nil"), cwd=\(w.shellCwd ?? "nil"), cached=\(!viewModel.needsWorkstreamEnrichment(pid: w.pid))")
             }
 
             // Update UI on main thread
@@ -1039,7 +1107,14 @@ struct WindowSwitcherView: View {
             ghosttyWindows.append(GhosttyWindow(id: windowNumber, name: name, axIndex: perProcessIndex, pid: pid))
         }
 
-        // Show windows immediately
+        // Apply cached workstream names BEFORE displaying
+        viewModel.applyCachedWorkstreamNames(to: &ghosttyWindows)
+
+        // Clean up cache for windows that no longer exist
+        let activePids = Set(ghosttyWindows.map { $0.pid })
+        viewModel.cleanupWorkstreamCache(activePids: activePids)
+
+        // Show windows immediately with cached data
         viewModel.windows = ghosttyWindows
 
         // Reset selection if out of bounds
@@ -1047,7 +1122,7 @@ struct WindowSwitcherView: View {
             viewModel.selectedIndex = 0
         }
 
-        // Enrich windows async
+        // Enrich only windows that need it
         enrichWindowsAsync(ghosttyWindows)
     }
 }
