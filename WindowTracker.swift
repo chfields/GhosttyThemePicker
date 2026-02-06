@@ -241,20 +241,16 @@ class WindowTracker: ObservableObject {
             // Check for Claude process
             windows[i].hasClaudeProcess = hasClaudeProcess(ghosttyPid: pid)
 
-            // Apply hook state - try multiple sources for CWD
-            var cwdToCheck: String? = windows[i].shellCwd
-
-            // If no shellCwd, try to get directory from workstream
-            if cwdToCheck == nil, let wsName = windows[i].workstreamName {
-                cwdToCheck = themeManager?.directoryForWorkstream(wsName)
+            // Apply hook state - always try to get fresh shell CWD for accurate matching
+            // The shell CWD is the most reliable source for hook state matching
+            var cwdToCheck: String? = getShellCwd(ghosttyPid: pid)
+            if let cwd = cwdToCheck {
+                windows[i].shellCwd = cwd
             }
 
-            // Last resort: try to get fresh shell CWD
-            if cwdToCheck == nil {
-                cwdToCheck = getShellCwd(ghosttyPid: pid)
-                if let cwd = cwdToCheck {
-                    windows[i].shellCwd = cwd
-                }
+            // Fallback: try workstream directory if shell CWD lookup failed
+            if cwdToCheck == nil, let wsName = windows[i].workstreamName {
+                cwdToCheck = themeManager?.directoryForWorkstream(wsName)
             }
 
             if let cwd = cwdToCheck {
