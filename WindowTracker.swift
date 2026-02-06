@@ -241,8 +241,23 @@ class WindowTracker: ObservableObject {
             // Check for Claude process
             windows[i].hasClaudeProcess = hasClaudeProcess(ghosttyPid: pid)
 
-            // Apply hook state based on shell CWD
-            if let cwd = windows[i].shellCwd ?? cachedShellCwds.values.first(where: { _ in true }) {
+            // Apply hook state - try multiple sources for CWD
+            var cwdToCheck: String? = windows[i].shellCwd
+
+            // If no shellCwd, try to get directory from workstream
+            if cwdToCheck == nil, let wsName = windows[i].workstreamName {
+                cwdToCheck = themeManager?.directoryForWorkstream(wsName)
+            }
+
+            // Last resort: try to get fresh shell CWD
+            if cwdToCheck == nil {
+                cwdToCheck = getShellCwd(ghosttyPid: pid)
+                if let cwd = cwdToCheck {
+                    windows[i].shellCwd = cwd
+                }
+            }
+
+            if let cwd = cwdToCheck {
                 windows[i].hookState = getHookState(forCwd: cwd)
             }
         }
@@ -261,8 +276,6 @@ class WindowTracker: ObservableObject {
             return
         }
 
-        let now = Date().timeIntervalSince1970
-
         for file in files where file.pathExtension == "json" {
             guard let data = try? Data(contentsOf: file),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -272,8 +285,13 @@ class WindowTracker: ObservableObject {
                 continue
             }
 
-            // Only use state files from the last 30 seconds (stale states are ignored)
-            if now - timestamp < 30 {
+            // Only update cache if this is newer than what we have
+            // This keeps "asking" state until a newer state replaces it
+            if let existing = hookStateCache[cwd] {
+                if timestamp > existing.timestamp {
+                    hookStateCache[cwd] = (state: state, timestamp: timestamp)
+                }
+            } else {
                 hookStateCache[cwd] = (state: state, timestamp: timestamp)
             }
         }

@@ -422,6 +422,11 @@ class ThemeManager: ObservableObject {
         return bestMatch
     }
 
+    /// Get the directory for a workstream by name
+    func directoryForWorkstream(_ name: String) -> String? {
+        return workstreams.first { $0.name == name }?.directory
+    }
+
     /// Get workstream name for a Ghostty PID.
     /// First checks launched windows cache, then falls back to directory matching.
     func workstreamNameForPID(_ pid: pid_t, shellCwd: String?) -> String? {
