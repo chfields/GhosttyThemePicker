@@ -1,6 +1,25 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Debug Logging
+
+func debugLog(_ message: String) {
+    let logFile = "/tmp/gtp-debug.log"
+    let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+    let logMessage = "[\(timestamp)] \(message)\n"
+    if let data = logMessage.data(using: .utf8) {
+        if FileManager.default.fileExists(atPath: logFile) {
+            if let handle = FileHandle(forWritingAtPath: logFile) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
+            }
+        } else {
+            FileManager.default.createFile(atPath: logFile, contents: data)
+        }
+    }
+}
+
 // MARK: - Models
 
 struct ThemeColors {
@@ -130,7 +149,15 @@ class ThemeManager: ObservableObject {
 
     // MARK: - Launch Ghostty
 
-    func launchGhostty(withTheme theme: String, inDirectory directory: String? = nil) {
+    /// Count windows already using this theme name for auto-naming
+    private func nextWindowNumber(for theme: String) -> Int {
+        let existing = launchedWindows.values.filter {
+            $0 == theme || $0.hasPrefix("\(theme) #")
+        }
+        return existing.count + 1
+    }
+
+    func launchGhostty(withTheme theme: String, inDirectory directory: String? = nil, name: String? = nil) {
         let process = Process()
 
         process.executableURL = URL(fileURLWithPath: "/Applications/Ghostty.app/Contents/MacOS/ghostty")
@@ -144,10 +171,30 @@ class ThemeManager: ObservableObject {
         do {
             try process.run()
 
-            // Track theme by PID for "Save as Workstream" feature
             let pid = process.processIdentifier
+
+            // Generate window name: use provided name, or auto-generate from theme
+            let windowName: String
+            if let providedName = name, !providedName.isEmpty {
+                windowName = providedName
+            } else {
+                // Auto-generate: "Dracula" for first, "Dracula #2" for second, etc.
+                let number = nextWindowNumber(for: theme)
+                windowName = number == 1 ? theme : "\(theme) #\(number)"
+            }
+
             DispatchQueue.main.async {
+                // Track for Window Switcher
+                self.launchedWindows[pid] = windowName
+                // Track theme by PID for "Save as Workstream" feature
                 self.launchedThemes[pid] = theme
+            }
+
+            // Bring Ghostty to the foreground after a brief delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if let ghosttyApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.mitchellh.ghostty").first {
+                    ghosttyApp.activate(options: [.activateIgnoringOtherApps])
+                }
             }
 
             addToRecentThemes(theme)
@@ -158,6 +205,7 @@ class ThemeManager: ObservableObject {
     }
 
     func launchWorkstream(_ workstream: Workstream) {
+        debugLog("launchWorkstream called for: \(workstream.name)")
         var args = ["--theme=\(workstream.theme)"]
 
         if let dir = workstream.directory, !dir.isEmpty {
@@ -189,8 +237,11 @@ class ThemeManager: ObservableObject {
         process.executableURL = URL(fileURLWithPath: "/Applications/Ghostty.app/Contents/MacOS/ghostty")
         process.arguments = args
 
+        debugLog("Launching ghostty with args: \(args)")
+
         do {
             try process.run()
+            debugLog("Process launched successfully, PID: \(process.processIdentifier)")
 
             // Store PID -> workstream name mapping for window switcher
             let pid = process.processIdentifier
@@ -198,10 +249,17 @@ class ThemeManager: ObservableObject {
                 self.launchedWindows[pid] = workstream.name
             }
 
+            // Bring Ghostty to the foreground after a brief delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if let ghosttyApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.mitchellh.ghostty").first {
+                    ghosttyApp.activate(options: [.activateIgnoringOtherApps])
+                }
+            }
+
             addToRecentThemes(workstream.theme)
             lastSelectedTheme = workstream.theme
         } catch {
-            print("Failed to launch Ghostty: \(error)")
+            debugLog("Failed to launch Ghostty: \(error)")
         }
     }
 

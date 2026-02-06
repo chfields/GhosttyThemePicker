@@ -13,6 +13,7 @@ struct GhosttyThemePickerApp: App {
         MenuBarExtra {
             MenuContent(themeManager: themeManager, showingWorkstreams: $showingWorkstreams)
                 .onAppear {
+                    debugLog("MenuContent onAppear called")
                     hotkeyManager.themeManager = themeManager
                     hotkeyManager.registerHotkey()
 
@@ -1180,6 +1181,7 @@ class QuickLaunchPanel {
 struct QuickLaunchView: View {
     @ObservedObject var themeManager: ThemeManager
     var onDismiss: (() -> Void)?
+    @State private var windowName: String = ""
 
     init(themeManager: ThemeManager, onDismiss: (() -> Void)? = nil) {
         self.themeManager = themeManager
@@ -1206,10 +1208,22 @@ struct QuickLaunchView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
+                    // Window Name (optional)
+                    HStack {
+                        Image(systemName: "tag")
+                            .frame(width: 24)
+                            .foregroundColor(.secondary)
+                        TextField("Window name (optional)", text: $windowName)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+
                     // Random Theme
                     Button {
                         if let theme = themeManager.pickRandomTheme() {
-                            themeManager.launchGhostty(withTheme: theme)
+                            themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
+                            windowName = ""
                         }
                         onDismiss?()
                     } label: {
@@ -1277,7 +1291,8 @@ struct QuickLaunchView: View {
 
                         ForEach(themeManager.favoriteThemes, id: \.self) { theme in
                             Button {
-                                themeManager.launchGhostty(withTheme: theme)
+                                themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
+                                windowName = ""
                                 onDismiss?()
                             } label: {
                                 HStack {
@@ -1307,7 +1322,8 @@ struct QuickLaunchView: View {
 
                         ForEach(themeManager.recentThemes, id: \.self) { theme in
                             Button {
-                                themeManager.launchGhostty(withTheme: theme)
+                                themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
+                                windowName = ""
                                 onDismiss?()
                             } label: {
                                 HStack {
@@ -1623,6 +1639,7 @@ struct MenuContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        let _ = debugLog("MenuContent body, workstreams count: \(themeManager.workstreams.count)")
         // Workstreams Section
         if !themeManager.workstreams.isEmpty {
             Text("Workstreams")
@@ -1631,6 +1648,7 @@ struct MenuContent: View {
 
             ForEach(themeManager.workstreams) { workstream in
                 Button {
+                    debugLog("Button clicked for workstream: \(workstream.name)")
                     themeManager.launchWorkstream(workstream)
                 } label: {
                     HStack {
