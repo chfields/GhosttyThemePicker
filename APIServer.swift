@@ -223,6 +223,7 @@ class APIServer {
 
     private func claudeStateString(_ state: ClaudeState) -> String {
         switch state {
+        case .asking: return "asking"
         case .waiting: return "waiting"
         case .working: return "working"
         case .running: return "running"

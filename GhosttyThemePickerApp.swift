@@ -211,7 +211,8 @@ enum ClaudeState: Int, Comparable {
     case notRunning = 0   // No Claude in this window
     case working = 1      // Claude is processing (spinner in title)
     case running = 2      // Claude detected via process tree (can't determine exact state)
-    case waiting = 3      // Claude waiting for input (✳ in title)
+    case waiting = 3      // Claude waiting for input (✳ in title) - at prompt
+    case asking = 4       // Claude asked a question and waiting for answer (highest priority)
 
     static func < (lhs: ClaudeState, rhs: ClaudeState) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -219,6 +220,7 @@ enum ClaudeState: Int, Comparable {
 
     var icon: String {
         switch self {
+        case .asking: return "questionmark.circle"
         case .waiting: return "hourglass"
         case .running: return "terminal"
         case .working: return "gearshape"
@@ -228,7 +230,8 @@ enum ClaudeState: Int, Comparable {
 
     var label: String {
         switch self {
-        case .waiting: return "Needs Input"
+        case .asking: return "Question"
+        case .waiting: return "Ready"
         case .running: return "Claude"
         case .working: return "Working"
         case .notRunning: return ""
@@ -390,18 +393,23 @@ struct GhosttyWindow: Identifiable {
     var workstreamName: String?   // Matched workstream name (via PID cache or directory)
     var shellCwd: String?         // Current working directory of shell
     var hasClaudeProcess: Bool = false  // Whether a Claude process is running in this window
+    var hookState: String?        // State from Claude Code hook ("asking" or "waiting")
 
-    /// Determine Claude's state based on window title and process detection
+    /// Determine Claude's state based on window title, hook state, and process detection
     var claudeState: ClaudeState {
         // Check title for exact state indicators
         if let firstChar = name.first {
-            // ✳ (U+2733) = waiting for input
-            if firstChar == "✳" && name.contains("Claude") {
+            // ✳ (U+2733) = waiting for input - refine with hook state if available
+            if firstChar == "✳" {
+                // Use hook state to distinguish "asking" vs "waiting"
+                if hookState == "asking" {
+                    return .asking
+                }
                 return .waiting
             }
             // Braille spinner characters = working
             let spinnerChars: Set<Character> = ["⠁", "⠂", "⠄", "⠈", "⠐", "⠠", "⡀", "⢀"]
-            if spinnerChars.contains(firstChar) && name.contains("Claude") {
+            if spinnerChars.contains(firstChar) {
                 return .working
             }
         }
@@ -448,11 +456,13 @@ class WindowSwitcherViewModel: ObservableObject {
         let sorted = filteredWindows
         var groups: [(ClaudeState, [GhosttyWindow])] = []
 
+        let asking = sorted.filter { $0.claudeState == .asking }
         let waiting = sorted.filter { $0.claudeState == .waiting }
         let running = sorted.filter { $0.claudeState == .running }
         let working = sorted.filter { $0.claudeState == .working }
         let other = sorted.filter { $0.claudeState == .notRunning }
 
+        if !asking.isEmpty { groups.append((.asking, asking)) }
         if !waiting.isEmpty { groups.append((.waiting, waiting)) }
         if !running.isEmpty { groups.append((.running, running)) }
         if !working.isEmpty { groups.append((.working, working)) }
@@ -939,6 +949,7 @@ struct WindowSwitcherView: View {
 
     private func iconColor(for state: ClaudeState) -> Color {
         switch state {
+        case .asking: return .red
         case .waiting: return .orange
         case .running: return .accentColor
         case .working: return .blue

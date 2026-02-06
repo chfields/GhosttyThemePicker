@@ -22,11 +22,21 @@ class WindowTracker: ObservableObject {
     private var cachedClaudePids: Set<pid_t> = []
     private var cachedShellCwds: [pid_t: String] = [:]
     private var workstreamCache: [pid_t: String?] = [:]
+    private var hookStateCache: [String: (state: String, timestamp: TimeInterval)] = [:]  // cwd -> hook state
 
     private init() {}
 
     func start() {
         guard refreshTimer == nil else { return }
+
+        // Debug: Print accessibility hierarchy for first window
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            if let firstWindow = self.ghosttyWindows.first {
+                print("=== DEBUG: Exploring Ghostty accessibility hierarchy ===")
+                TerminalContentReader.debugHierarchy(pid: firstWindow.pid, axIndex: firstWindow.axIndex)
+                print("=== END DEBUG ===")
+            }
+        }
 
         // Initial refresh
         refreshWindows()
@@ -210,6 +220,9 @@ class WindowTracker: ObservableObject {
     }
 
     private func enrichWindows(_ windows: inout [GhosttyWindow]) {
+        // Load hook state files once per refresh
+        loadHookStates()
+
         for i in windows.indices {
             let pid = windows[i].pid
 
@@ -227,7 +240,59 @@ class WindowTracker: ObservableObject {
 
             // Check for Claude process
             windows[i].hasClaudeProcess = hasClaudeProcess(ghosttyPid: pid)
+
+            // Apply hook state based on shell CWD
+            if let cwd = windows[i].shellCwd ?? cachedShellCwds.values.first(where: { _ in true }) {
+                windows[i].hookState = getHookState(forCwd: cwd)
+            }
         }
+    }
+
+    // MARK: - Hook State Reading
+
+    private func loadHookStates() {
+        let stateDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude-states")
+
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: stateDir,
+            includingPropertiesForKeys: nil
+        ) else {
+            return
+        }
+
+        let now = Date().timeIntervalSince1970
+
+        for file in files where file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let state = json["state"] as? String,
+                  let cwd = json["cwd"] as? String,
+                  let timestamp = json["timestamp"] as? TimeInterval else {
+                continue
+            }
+
+            // Only use state files from the last 30 seconds (stale states are ignored)
+            if now - timestamp < 30 {
+                hookStateCache[cwd] = (state: state, timestamp: timestamp)
+            }
+        }
+    }
+
+    private func getHookState(forCwd cwd: String) -> String? {
+        // Direct match
+        if let cached = hookStateCache[cwd] {
+            return cached.state
+        }
+
+        // Try matching by subdirectory (hook might be running in a subdirectory)
+        for (cachedCwd, cached) in hookStateCache {
+            if cwd.hasPrefix(cachedCwd + "/") || cachedCwd.hasPrefix(cwd + "/") {
+                return cached.state
+            }
+        }
+
+        return nil
     }
 
     private func getShellCwd(ghosttyPid: pid_t) -> String? {
