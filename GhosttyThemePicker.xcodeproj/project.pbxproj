@@ -10,6 +10,8 @@
 		A1000001234567890000001 /* GhosttyThemePickerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002234567890000001 /* GhosttyThemePickerApp.swift */; };
 		A1000001234567890000002 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002234567890000002 /* ThemeManager.swift */; };
 		A1000001234567890000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000002234567890000004 /* Assets.xcassets */; };
+		A1000001234567890000004 /* APIServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002234567890000005 /* APIServer.swift */; };
+		A1000001234567890000005 /* WindowTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002234567890000006 /* WindowTracker.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -17,6 +19,8 @@
 		A1000002234567890000002 /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
 		A1000002234567890000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000002234567890000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A1000002234567890000005 /* APIServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIServer.swift; sourceTree = "<group>"; };
+		A1000002234567890000006 /* WindowTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowTracker.swift; sourceTree = "<group>"; };
 		A1000003234567890000001 /* GhosttyThemePicker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GhosttyThemePicker.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -36,6 +40,8 @@
 			children = (
 				A1000002234567890000001 /* GhosttyThemePickerApp.swift */,
 				A1000002234567890000002 /* ThemeManager.swift */,
+				A1000002234567890000005 /* APIServer.swift */,
+				A1000002234567890000006 /* WindowTracker.swift */,
 				A1000002234567890000003 /* Info.plist */,
 				A1000002234567890000004 /* Assets.xcassets */,
 				A1000005234567890000002 /* Products */,
@@ -121,6 +127,8 @@
 			files = (
 				A1000001234567890000001 /* GhosttyThemePickerApp.swift in Sources */,
 				A1000001234567890000002 /* ThemeManager.swift in Sources */,
+				A1000001234567890000004 /* APIServer.swift in Sources */,
+				A1000001234567890000005 /* WindowTracker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

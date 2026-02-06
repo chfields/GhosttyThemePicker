@@ -2,8 +2,40 @@ import SwiftUI
 import Carbon
 import ApplicationServices
 
+// MARK: - App Delegate for early initialization
+
+class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Start API server immediately on app launch
+        startBackgroundServices()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        WindowTracker.shared.stop()
+        APIServer.shared.stop()
+    }
+
+    private func startBackgroundServices() {
+        // Start window tracker
+        WindowTracker.shared.start()
+
+        // Configure API server
+        APIServer.shared.windowDataProvider = {
+            WindowTracker.shared.ghosttyWindows
+        }
+        APIServer.shared.focusWindowHandler = { axIndex, pid in
+            WindowTracker.shared.focusWindow(axIndex: axIndex, pid: pid)
+        }
+
+        // Start API server
+        APIServer.shared.start()
+        print("Background services started")
+    }
+}
+
 @main
 struct GhosttyThemePickerApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var themeManager = ThemeManager()
     @State private var showingWorkstreams = false
     @State private var hasLaunchedAutoStart = false
@@ -16,6 +48,9 @@ struct GhosttyThemePickerApp: App {
                     debugLog("MenuContent onAppear called")
                     hotkeyManager.themeManager = themeManager
                     hotkeyManager.registerHotkey()
+
+                    // Connect WindowTracker to themeManager for workstream lookups
+                    WindowTracker.shared.themeManager = themeManager
 
                     // Launch auto-start workstreams on first appearance
                     if !hasLaunchedAutoStart {
@@ -801,6 +836,7 @@ struct WindowSwitcherView: View {
         }
         .frame(width: 400, height: 300)
         .onAppear {
+            debugLog("👁️ WindowSwitcherView.onAppear called")
             // Connect viewModel to themeManager for workstream lookup
             viewModel.themeManager = themeManager
 
@@ -808,6 +844,7 @@ struct WindowSwitcherView: View {
             if viewModel.hasScreenRecordingPermission {
                 loadWindows()
             } else {
+                debugLog("⚠️ No screen recording permission, requesting...")
                 // Request permission (will show system dialog)
                 CGRequestScreenCaptureAccess()
             }
@@ -818,6 +855,7 @@ struct WindowSwitcherView: View {
             }
         }
         .onDisappear {
+            debugLog("👁️ WindowSwitcherView.onDisappear called")
             panel?.keyHandler = nil
         }
         .onChange(of: viewModel.searchText) { _ in
@@ -909,12 +947,15 @@ struct WindowSwitcherView: View {
     }
 
     private func loadWindows() {
+        debugLog("🔄 loadWindows() called")
         // Try to load windows using Accessibility API first (correct order for AppleScript)
         if loadWindowsViaAccessibilityAPI() {
+            debugLog("✅ loadWindowsViaAccessibilityAPI succeeded")
             return
         }
 
         // Fall back to CGWindowList API if Accessibility fails
+        debugLog("⚠️ Falling back to CGWindowList API")
         print("Falling back to CGWindowList API")
         loadWindowsViaCGWindowList()
     }
@@ -922,7 +963,7 @@ struct WindowSwitcherView: View {
     private func loadWindowsViaAccessibilityAPI() -> Bool {
         // Get ALL Ghostty processes (not just the first one)
         let runningApps = NSWorkspace.shared.runningApplications
-        let ghosttyApps = runningApps.filter { $0.localizedName?.lowercased() == "ghostty" }
+        let ghosttyApps = runningApps.filter { $0.bundleIdentifier == "com.mitchellh.ghostty" }
 
         guard !ghosttyApps.isEmpty else {
             print("No Ghostty processes found")
@@ -952,14 +993,28 @@ struct WindowSwitcherView: View {
 
             // Enumerate windows from this process (1-based index per process)
             for (perProcessIndex, windowElement) in windows.enumerated() {
-                // Get window title
+                // Get window title first for logging
                 var titleRef: CFTypeRef?
                 AXUIElementCopyAttributeValue(windowElement, kAXTitleAttribute as CFString, &titleRef)
                 let title = (titleRef as? String) ?? "Window \(ghosttyWindows.count + 1)"
 
+                // Get subrole for filtering
+                var subroleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(windowElement, kAXSubroleAttribute as CFString, &subroleRef)
+                let subrole = subroleRef as? String
+
+                debugLog("  📋 Window[\(perProcessIndex)]: '\(title)' subrole=\(subrole ?? "nil")")
+
+                // Skip utility windows, dialogs, floating panels
+                if subrole == "AXFloatingWindow" || subrole == "AXDialog" || subrole == "AXSystemDialog" {
+                    debugLog("    ❌ FILTERED OUT (subrole: \(subrole ?? "nil"))")
+                    continue
+                }
+
                 // Use a unique ID based on current count, but axIndex is per-process (1-based)
                 let id = ghosttyWindows.count + 1
                 ghosttyWindows.append(GhosttyWindow(id: id, name: title, axIndex: perProcessIndex + 1, pid: pid))
+                debugLog("    ✅ INCLUDED")
             }
         }
 
@@ -979,6 +1034,10 @@ struct WindowSwitcherView: View {
         viewModel.cleanupWorkstreamCache(activePids: activePids)
 
         // Show windows immediately with cached data
+        debugLog("📺 Setting viewModel.windows (Accessibility API) with \(ghosttyWindows.count) windows:")
+        for w in ghosttyWindows {
+            debugLog("  - '\(w.name)' (PID: \(w.pid), axIndex: \(w.axIndex))")
+        }
         viewModel.windows = ghosttyWindows
 
         // Reset selection if out of bounds
@@ -1072,18 +1131,34 @@ struct WindowSwitcherView: View {
                 logFunc("  PID \(w.pid): ws=\(w.workstreamName ?? "nil"), cwd=\(w.shellCwd ?? "nil"), cached=\(!viewModel.needsWorkstreamEnrichment(pid: w.pid))")
             }
 
-            // Update UI on main thread
+            // Update UI on main thread - merge enriched data into current windows
             DispatchQueue.main.async {
-                logFunc("Updating UI with enriched windows")
-                viewModel.windows = enriched
+                logFunc("🔀 Merging enriched windows into viewModel.windows")
+                logFunc("  Current viewModel.windows count: \(viewModel.windows.count)")
+                logFunc("  Enriched windows count: \(enriched.count)")
+                // Update existing windows in place rather than replacing the list
+                // This prevents windows from disappearing if the list changed during enrichment
+                for enrichedWindow in enriched {
+                    if let index = viewModel.windows.firstIndex(where: { $0.pid == enrichedWindow.pid && $0.axIndex == enrichedWindow.axIndex }) {
+                        viewModel.windows[index].workstreamName = enrichedWindow.workstreamName
+                        viewModel.windows[index].shellCwd = enrichedWindow.shellCwd
+                        viewModel.windows[index].hasClaudeProcess = enrichedWindow.hasClaudeProcess
+                        logFunc("  ✅ Merged: '\(enrichedWindow.name)' (PID: \(enrichedWindow.pid))")
+                    } else {
+                        logFunc("  ⚠️ No match for: '\(enrichedWindow.name)' (PID: \(enrichedWindow.pid), axIndex: \(enrichedWindow.axIndex))")
+                    }
+                }
+                logFunc("  Final viewModel.windows count: \(viewModel.windows.count)")
             }
         }
     }
 
     private func loadWindowsViaCGWindowList() {
+        debugLog("🔄 loadWindowsViaCGWindowList() called")
         // Use CGWindowList API to get Ghostty windows (fallback method)
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            debugLog("❌ CGWindowListCopyWindowInfo returned nil")
             return
         }
 
@@ -1091,14 +1166,27 @@ struct WindowSwitcherView: View {
         var perProcessIndices: [pid_t: Int] = [:]  // Track per-process window indices
 
         for window in windowList {
-            guard let ownerName = window["kCGWindowOwnerName"] as? String,
-                  ownerName.lowercased() == "ghostty",
-                  let ownerPID = window["kCGWindowOwnerPID"] as? Int else {
+            let ownerName = window["kCGWindowOwnerName"] as? String
+            let windowName = window["kCGWindowName"] as? String
+            let windowLayer = window["kCGWindowLayer"] as? Int
+
+            // Log Ghostty windows even if filtered
+            if ownerName == "Ghostty" {
+                debugLog("  📋 CGWindow: '\(windowName ?? "nil")' layer=\(windowLayer ?? -1)")
+            }
+
+            guard ownerName == "Ghostty",
+                  let ownerPID = window["kCGWindowOwnerPID"] as? Int,
+                  let layer = windowLayer,
+                  layer == 0 else {  // Normal windows only (excludes utility windows, panels)
+                if ownerName == "Ghostty" {
+                    debugLog("    ❌ FILTERED OUT (layer: \(windowLayer ?? -1))")
+                }
                 continue
             }
 
             let pid = pid_t(ownerPID)
-            let name = window["kCGWindowName"] as? String ?? "Window \(ghosttyWindows.count + 1)"
+            let name = windowName ?? "Window \(ghosttyWindows.count + 1)"
             let windowNumber = window["kCGWindowNumber"] as? Int ?? ghosttyWindows.count + 1
 
             // Track per-process window index (1-based)
@@ -1106,6 +1194,7 @@ struct WindowSwitcherView: View {
             perProcessIndices[pid] = perProcessIndex
 
             ghosttyWindows.append(GhosttyWindow(id: windowNumber, name: name, axIndex: perProcessIndex, pid: pid))
+            debugLog("    ✅ INCLUDED")
         }
 
         // Apply cached workstream names BEFORE displaying
@@ -1116,6 +1205,10 @@ struct WindowSwitcherView: View {
         viewModel.cleanupWorkstreamCache(activePids: activePids)
 
         // Show windows immediately with cached data
+        debugLog("📺 Setting viewModel.windows (CGWindowList) with \(ghosttyWindows.count) windows:")
+        for w in ghosttyWindows {
+            debugLog("  - '\(w.name)' (PID: \(w.pid), axIndex: \(w.axIndex))")
+        }
         viewModel.windows = ghosttyWindows
 
         // Reset selection if out of bounds
