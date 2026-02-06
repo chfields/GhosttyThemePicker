@@ -402,19 +402,24 @@ class ThemeManager: ObservableObject {
 
     /// Find a workstream that matches the given directory path.
     /// Used to identify windows not launched by the app (e.g., opened manually).
+    /// Prefers the most specific (longest path) match when multiple workstreams could match.
     func workstreamForDirectory(_ directory: String) -> Workstream? {
-        // Exact match first
-        if let ws = workstreams.first(where: { $0.directory == directory }) {
-            return ws
-        }
-        // Check if directory is a subdirectory of a workstream's directory
+        var bestMatch: Workstream? = nil
+        var bestMatchLength = 0
+
         for ws in workstreams {
             guard let wsDir = ws.directory, !wsDir.isEmpty else { continue }
-            if directory.hasPrefix(wsDir + "/") {
-                return ws
+
+            // Check exact match or subdirectory match
+            if directory == wsDir || directory.hasPrefix(wsDir + "/") {
+                // Prefer longer (more specific) paths
+                if wsDir.count > bestMatchLength {
+                    bestMatch = ws
+                    bestMatchLength = wsDir.count
+                }
             }
         }
-        return nil
+        return bestMatch
     }
 
     /// Get workstream name for a Ghostty PID.
