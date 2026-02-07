@@ -64,7 +64,7 @@ struct GhosttyThemePickerApp: App {
             Label("Ghostty Theme Picker", systemImage: "terminal")
         }
 
-        Window("Manage Workstreams", id: "workstreams") {
+        Window("Settings", id: "workstreams") {
             SettingsView(themeManager: themeManager)
         }
         .windowResizability(.contentSize)
@@ -1905,7 +1905,7 @@ struct MenuContent: View {
         } label: {
             HStack {
                 Image(systemName: "gear")
-                Text("Manage Workstreams...")
+                Text("Settings...")
             }
         }
         .keyboardShortcut(",", modifiers: .command)
@@ -1928,9 +1928,30 @@ struct MenuContent: View {
     }
 }
 
-// MARK: - Settings View
+// MARK: - Settings View (Tabbed)
 
 struct SettingsView: View {
+    @ObservedObject var themeManager: ThemeManager
+
+    var body: some View {
+        TabView {
+            WorkstreamsSettingsView(themeManager: themeManager)
+                .tabItem {
+                    Label("Workstreams", systemImage: "folder")
+                }
+
+            ClaudeHooksSettingsView()
+                .tabItem {
+                    Label("Claude Hooks", systemImage: "terminal.fill")
+                }
+        }
+        .frame(width: 500, height: 400)
+    }
+}
+
+// MARK: - Workstreams Settings View
+
+struct WorkstreamsSettingsView: View {
     @ObservedObject var themeManager: ThemeManager
     @State private var showingAddSheet = false
     @State private var showingExportSheet = false
@@ -2029,7 +2050,6 @@ struct SettingsView: View {
             }
         }
         .padding()
-        .frame(width: 500, height: 350)
         .sheet(isPresented: $showingAddSheet) {
             WorkstreamEditorView(themeManager: themeManager, workstream: nil) {
                 showingAddSheet = false
@@ -2061,6 +2081,194 @@ struct SettingsView: View {
                 let count = themeManager.importWorkstreams(from: data)
                 if count > 0 {
                     // Show brief confirmation - workstreams will appear in list
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Claude Hooks Settings View
+
+struct ClaudeHooksSettingsView: View {
+    @State private var isInstalled = false
+    @State private var isProcessing = false
+    @State private var errorMessage: String?
+    @State private var successMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Claude Asking Detection")
+                .font(.headline)
+
+            Text("Install Claude Code hooks to detect when Claude asks a question or needs permission. This enables the \"asking\" state indicator in the window switcher and Stream Deck.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Status indicator
+            HStack {
+                Image(systemName: isInstalled ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(isInstalled ? .green : .secondary)
+                Text(isInstalled ? "Hooks installed" : "Hooks not installed")
+                    .font(.body)
+            }
+            .padding(.vertical, 4)
+
+            // Description of what gets installed
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("This will install:")
+                        .font(.caption)
+                        .fontWeight(.medium)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .top) {
+                            Image(systemName: "doc.text")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading) {
+                                Text("~/.claude/hooks/claude-state-hook.sh")
+                                    .font(.system(.caption, design: .monospaced))
+                                Text("Detects when Claude asks questions in responses")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        HStack(alignment: .top) {
+                            Image(systemName: "doc.text")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading) {
+                                Text("~/.claude/hooks/permission-hook.sh")
+                                    .font(.system(.caption, design: .monospaced))
+                                Text("Detects permission prompts")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        HStack(alignment: .top) {
+                            Image(systemName: "gearshape")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading) {
+                                Text("~/.claude/settings.json")
+                                    .font(.system(.caption, design: .monospaced))
+                                Text("Adds hook configuration (preserves existing settings)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(4)
+            }
+
+            // Error/Success messages
+            if let error = errorMessage {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+
+            if let success = successMessage {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text(success)
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            }
+
+            Spacer()
+
+            // Action buttons
+            HStack {
+                if isInstalled {
+                    Button {
+                        uninstallHooks()
+                    } label: {
+                        HStack {
+                            Image(systemName: "trash")
+                            Text("Uninstall Hooks")
+                        }
+                    }
+                    .disabled(isProcessing)
+                } else {
+                    Button {
+                        installHooks()
+                    } label: {
+                        HStack {
+                            Image(systemName: "square.and.arrow.down")
+                            Text("Install Hooks")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isProcessing)
+                }
+
+                if isProcessing {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                }
+            }
+        }
+        .padding()
+        .onAppear {
+            checkInstallationStatus()
+        }
+    }
+
+    private func checkInstallationStatus() {
+        isInstalled = HookInstaller.shared.areHooksInstalled()
+    }
+
+    private func installHooks() {
+        isProcessing = true
+        errorMessage = nil
+        successMessage = nil
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try HookInstaller.shared.installHooks()
+                DispatchQueue.main.async {
+                    isProcessing = false
+                    isInstalled = true
+                    successMessage = "Hooks installed successfully. Restart Claude Code to activate."
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isProcessing = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func uninstallHooks() {
+        isProcessing = true
+        errorMessage = nil
+        successMessage = nil
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try HookInstaller.shared.uninstallHooks()
+                DispatchQueue.main.async {
+                    isProcessing = false
+                    isInstalled = false
+                    successMessage = "Hooks uninstalled successfully."
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isProcessing = false
+                    errorMessage = error.localizedDescription
                 }
             }
         }
