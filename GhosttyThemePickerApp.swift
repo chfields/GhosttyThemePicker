@@ -1944,6 +1944,11 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Claude Hooks", systemImage: "terminal.fill")
                 }
+
+            StreamDeckSettingsView()
+                .tabItem {
+                    Label("Stream Deck", systemImage: "square.grid.3x3")
+                }
         }
         .frame(width: 500, height: 400)
     }
@@ -2268,6 +2273,238 @@ struct ClaudeHooksSettingsView: View {
             } catch {
                 DispatchQueue.main.async {
                     isProcessing = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Stream Deck Settings View
+
+struct StreamDeckSettingsView: View {
+    @State private var isInstalled = false
+    @State private var installedVersion: String?
+    @State private var latestVersion: String?
+    @State private var downloadURL: String?
+    @State private var isLoading = false
+    @State private var isDownloading = false
+    @State private var errorMessage: String?
+    @State private var successMessage: String?
+    @State private var streamDeckInstalled = false
+
+    private var updateAvailable: Bool {
+        guard let installed = installedVersion, let latest = latestVersion else { return false }
+        return StreamDeckInstaller.shared.isUpdateAvailable(installed: installed, latest: latest)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Stream Deck Plugin")
+                .font(.headline)
+
+            Text("Install the Ghostty Claude plugin for Elgato Stream Deck to display Claude state indicators and quickly switch between Ghostty windows.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Stream Deck app status
+            if !streamDeckInstalled {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text("Stream Deck app not detected")
+                        .font(.caption)
+                    Spacer()
+                    Link("Get a Stream Deck", destination: URL(string: "https://www.elgato.com/us/en/s/explore-stream-deck")!)
+                        .font(.caption)
+                }
+                .padding(.vertical, 4)
+            }
+
+            // Plugin status
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: isInstalled ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundColor(isInstalled ? .green : .secondary)
+                        if isInstalled {
+                            Text("Plugin installed")
+                            if let version = installedVersion {
+                                Text("v\(version)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        } else {
+                            Text("Plugin not installed")
+                        }
+                    }
+
+                    if let latest = latestVersion {
+                        HStack {
+                            Image(systemName: "arrow.down.circle")
+                                .foregroundColor(.blue)
+                            Text("Latest version: v\(latest)")
+                                .font(.caption)
+                            if updateAvailable {
+                                Text("(Update available)")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+
+                    if isLoading {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                            Text("Checking for updates...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(4)
+            }
+
+            // Description
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Features:")
+                        .font(.caption)
+                        .fontWeight(.medium)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Show Claude state for each Ghostty window", systemImage: "circle.fill")
+                            .font(.caption)
+                        Label("Click to focus window", systemImage: "arrow.right.circle")
+                            .font(.caption)
+                        Label("Windows sorted by priority (asking first)", systemImage: "list.number")
+                            .font(.caption)
+                    }
+                    .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(4)
+            }
+
+            // Error/Success messages
+            if let error = errorMessage {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+
+            if let success = successMessage {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text(success)
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            }
+
+            Spacer()
+
+            // Action buttons
+            HStack {
+                Button {
+                    checkForUpdates()
+                } label: {
+                    HStack {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Check for Updates")
+                    }
+                }
+                .disabled(isLoading || isDownloading)
+
+                Spacer()
+
+                if isInstalled && updateAvailable {
+                    Button {
+                        installOrUpdate()
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.down.circle")
+                            Text("Update Plugin")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isDownloading || downloadURL == nil)
+                } else if !isInstalled {
+                    Button {
+                        installOrUpdate()
+                    } label: {
+                        HStack {
+                            Image(systemName: "square.and.arrow.down")
+                            Text("Install Plugin")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isDownloading || downloadURL == nil)
+                }
+
+                if isDownloading {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                }
+            }
+        }
+        .padding()
+        .onAppear {
+            checkStatus()
+            checkForUpdates()
+        }
+    }
+
+    private func checkStatus() {
+        streamDeckInstalled = StreamDeckInstaller.shared.isStreamDeckInstalled()
+        isInstalled = StreamDeckInstaller.shared.isInstalled()
+        installedVersion = StreamDeckInstaller.shared.installedVersion()
+    }
+
+    private func checkForUpdates() {
+        isLoading = true
+        errorMessage = nil
+
+        StreamDeckInstaller.shared.fetchLatestRelease { result in
+            DispatchQueue.main.async {
+                isLoading = false
+                switch result {
+                case .success(let release):
+                    latestVersion = release.version
+                    downloadURL = release.downloadURL
+                case .failure(let error):
+                    errorMessage = "Failed to check for updates: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func installOrUpdate() {
+        guard let url = downloadURL else { return }
+
+        isDownloading = true
+        errorMessage = nil
+        successMessage = nil
+
+        StreamDeckInstaller.shared.installPlugin(from: url) { result in
+            DispatchQueue.main.async {
+                isDownloading = false
+                switch result {
+                case .success:
+                    successMessage = "Plugin downloaded. Stream Deck installer should open automatically."
+                    // Refresh status after a delay to allow installation
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        checkStatus()
+                    }
+                case .failure(let error):
                     errorMessage = error.localizedDescription
                 }
             }
