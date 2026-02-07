@@ -29,15 +29,6 @@ class WindowTracker: ObservableObject {
     func start() {
         guard refreshTimer == nil else { return }
 
-        // Debug: Print accessibility hierarchy for first window
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            if let firstWindow = self.ghosttyWindows.first {
-                print("=== DEBUG: Exploring Ghostty accessibility hierarchy ===")
-                TerminalContentReader.debugHierarchy(pid: firstWindow.pid, axIndex: firstWindow.axIndex)
-                print("=== END DEBUG ===")
-            }
-        }
-
         // Initial refresh
         refreshWindows()
 
