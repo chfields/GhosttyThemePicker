@@ -32,6 +32,23 @@ struct ErrorResponse: Codable {
     let error: String
 }
 
+struct WorkstreamResponse: Codable {
+    let id: String
+    let name: String
+    let theme: String
+    let directory: String?
+    let hasCommand: Bool
+}
+
+struct WorkstreamsResponse: Codable {
+    let workstreams: [WorkstreamResponse]
+}
+
+struct WorkstreamLaunchResponse: Codable {
+    let name: String
+    let theme: String
+}
+
 // MARK: - API Server
 
 class APIServer {
@@ -47,6 +64,9 @@ class APIServer {
     var windowDataProvider: (() -> [GhosttyWindow])?
     var focusWindowHandler: ((Int, pid_t) -> Void)?
     var launchRandomHandler: (() -> (theme: String, windowName: String)?)?
+    var workstreamsProvider: (() -> [WorkstreamResponse])?
+    var launchWorkstreamHandler: ((String) -> (name: String, theme: String)?)?
+    var openQuickLaunchHandler: (() -> Void)?
 
     private init() {}
 
@@ -180,6 +200,16 @@ class APIServer {
         case ("POST", "/api/launch-random"):
             handleLaunchRandom(connection)
 
+        case ("GET", "/api/workstreams"):
+            handleGetWorkstreams(connection)
+
+        case ("POST", "/api/quick-launch"):
+            handleOpenQuickLaunch(connection)
+
+        case ("POST", _) where path.hasPrefix("/api/workstreams/") && path.hasSuffix("/launch"):
+            let workstreamId = extractWorkstreamId(from: path)
+            handleLaunchWorkstream(connection, workstreamId: workstreamId)
+
         case ("POST", _) where path.hasPrefix("/api/windows/") && path.hasSuffix("/focus"):
             let windowId = extractWindowId(from: path)
             handleFocusWindow(connection, windowId: windowId)
@@ -195,6 +225,15 @@ class APIServer {
 
     private func extractWindowId(from path: String) -> String {
         // /api/windows/{id}/focus -> extract {id}
+        let components = path.components(separatedBy: "/")
+        if components.count >= 4 {
+            return components[3]
+        }
+        return ""
+    }
+
+    private func extractWorkstreamId(from path: String) -> String {
+        // /api/workstreams/{id}/launch -> extract {id}
         let components = path.components(separatedBy: "/")
         if components.count >= 4 {
             return components[3]
@@ -272,6 +311,42 @@ class APIServer {
 
         let response = LaunchResponse(theme: result.theme, windowName: result.windowName)
         sendResponse(connection, status: 200, body: response)
+    }
+
+    private func handleGetWorkstreams(_ connection: NWConnection) {
+        guard let provider = workstreamsProvider else {
+            sendResponse(connection, status: 503, body: ErrorResponse(error: "Workstreams not available"))
+            return
+        }
+
+        let workstreams = provider()
+        let response = WorkstreamsResponse(workstreams: workstreams)
+        sendResponse(connection, status: 200, body: response)
+    }
+
+    private func handleLaunchWorkstream(_ connection: NWConnection, workstreamId: String) {
+        guard let handler = launchWorkstreamHandler else {
+            sendResponse(connection, status: 503, body: ErrorResponse(error: "Workstream launch handler not available"))
+            return
+        }
+
+        guard let result = handler(workstreamId) else {
+            sendResponse(connection, status: 404, body: ErrorResponse(error: "Workstream not found"))
+            return
+        }
+
+        let response = WorkstreamLaunchResponse(name: result.name, theme: result.theme)
+        sendResponse(connection, status: 200, body: response)
+    }
+
+    private func handleOpenQuickLaunch(_ connection: NWConnection) {
+        guard let handler = openQuickLaunchHandler else {
+            sendResponse(connection, status: 503, body: ErrorResponse(error: "Quick launch handler not available"))
+            return
+        }
+
+        handler()
+        sendResponse(connection, status: 200, body: ["success": true])
     }
 
     private func sendResponse<T: Encodable>(_ connection: NWConnection, status: Int, body: T) {

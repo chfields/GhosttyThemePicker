@@ -42,6 +42,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return (theme: theme, windowName: windowName)
         }
 
+        APIServer.shared.workstreamsProvider = {
+            guard let themeManager = WindowTracker.shared.themeManager else {
+                return []
+            }
+            return themeManager.workstreams.map { ws in
+                WorkstreamResponse(
+                    id: ws.id.uuidString,
+                    name: ws.name,
+                    theme: ws.theme,
+                    directory: ws.directory,
+                    hasCommand: ws.command != nil && !(ws.command?.isEmpty ?? true)
+                )
+            }
+        }
+
+        APIServer.shared.launchWorkstreamHandler = { idString in
+            guard let themeManager = WindowTracker.shared.themeManager,
+                  let uuid = UUID(uuidString: idString),
+                  let workstream = themeManager.workstreams.first(where: { $0.id == uuid }) else {
+                return nil
+            }
+            themeManager.launchWorkstream(workstream)
+            return (name: workstream.name, theme: workstream.theme)
+        }
+
+        APIServer.shared.openQuickLaunchHandler = {
+            DispatchQueue.main.async {
+                QuickLaunchPanel.shared.show(themeManager: WindowTracker.shared.themeManager)
+            }
+        }
+
         // Start API server
         APIServer.shared.start()
         print("Background services started")
