@@ -6,6 +6,11 @@ import ApplicationServices
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Prompt for screen recording permission if not already granted
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+        }
+
         // Start API server immediately on app launch
         startBackgroundServices()
     }
