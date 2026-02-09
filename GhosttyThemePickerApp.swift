@@ -27,6 +27,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             WindowTracker.shared.focusWindow(axIndex: axIndex, pid: pid)
         }
 
+        APIServer.shared.launchRandomHandler = {
+            guard let themeManager = WindowTracker.shared.themeManager,
+                  let theme = themeManager.pickRandomTheme() else {
+                return nil
+            }
+            let windowName = theme
+            themeManager.launchGhostty(withTheme: theme, name: windowName)
+            return (theme: theme, windowName: windowName)
+        }
+
         // Start API server
         APIServer.shared.start()
         print("Background services started")

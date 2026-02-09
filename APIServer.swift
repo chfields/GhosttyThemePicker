@@ -23,6 +23,11 @@ struct HealthResponse: Codable {
     let version: String
 }
 
+struct LaunchResponse: Codable {
+    let theme: String
+    let windowName: String
+}
+
 struct ErrorResponse: Codable {
     let error: String
 }
@@ -41,6 +46,7 @@ class APIServer {
     // Reference to get window data - set by the app
     var windowDataProvider: (() -> [GhosttyWindow])?
     var focusWindowHandler: ((Int, pid_t) -> Void)?
+    var launchRandomHandler: (() -> (theme: String, windowName: String)?)?
 
     private init() {}
 
@@ -170,6 +176,9 @@ class APIServer {
         case ("GET", "/api/windows"):
             handleGetWindows(connection)
 
+        case ("POST", "/api/launch-random"):
+            handleLaunchRandom(connection)
+
         case ("POST", _) where path.hasPrefix("/api/windows/") && path.hasSuffix("/focus"):
             let windowId = extractWindowId(from: path)
             handleFocusWindow(connection, windowId: windowId)
@@ -249,6 +258,21 @@ class APIServer {
         }
     }
 
+    private func handleLaunchRandom(_ connection: NWConnection) {
+        guard let handler = launchRandomHandler else {
+            sendResponse(connection, status: 503, body: ErrorResponse(error: "Launch handler not available"))
+            return
+        }
+
+        guard let result = handler() else {
+            sendResponse(connection, status: 500, body: ErrorResponse(error: "No themes available"))
+            return
+        }
+
+        let response = LaunchResponse(theme: result.theme, windowName: result.windowName)
+        sendResponse(connection, status: 200, body: response)
+    }
+
     private func sendResponse<T: Encodable>(_ connection: NWConnection, status: Int, body: T) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
@@ -299,6 +323,7 @@ class APIServer {
         case 204: return "No Content"
         case 400: return "Bad Request"
         case 404: return "Not Found"
+        case 500: return "Internal Server Error"
         case 503: return "Service Unavailable"
         default: return "Unknown"
         }
