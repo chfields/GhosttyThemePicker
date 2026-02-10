@@ -705,6 +705,52 @@ class WindowSwitcherViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Hook State Reading
+
+    private var hookStateCache: [String: (state: String, timestamp: TimeInterval)] = [:]
+
+    func loadHookStates() {
+        let stateDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude-states")
+
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: stateDir,
+            includingPropertiesForKeys: nil
+        ) else {
+            return
+        }
+
+        for file in files where file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let state = json["state"] as? String,
+                  let cwd = json["cwd"] as? String,
+                  let timestamp = json["timestamp"] as? TimeInterval else {
+                continue
+            }
+
+            if let existing = hookStateCache[cwd] {
+                if timestamp > existing.timestamp {
+                    hookStateCache[cwd] = (state: state, timestamp: timestamp)
+                }
+            } else {
+                hookStateCache[cwd] = (state: state, timestamp: timestamp)
+            }
+        }
+    }
+
+    func getHookState(forCwd cwd: String) -> String? {
+        if let cached = hookStateCache[cwd] {
+            return cached.state
+        }
+        for (cachedCwd, cached) in hookStateCache {
+            if cwd.hasPrefix(cachedCwd + "/") || cachedCwd.hasPrefix(cwd + "/") {
+                return cached.state
+            }
+        }
+        return nil
+    }
+
     // MARK: - Shell CWD Detection
 
     /// Get the current working directory of the shell running inside a Ghostty window
@@ -1248,6 +1294,7 @@ struct WindowSwitcherView: View {
 
             // Load process tree data once (single ps call) - needed for Claude detection
             viewModel.loadProcessCache()
+            viewModel.loadHookStates()
             logFunc("Process cache loaded with \(viewModel.cachedProcessTree.count) entries")
 
             // Debug: show relevant entries for our window PIDs
@@ -1278,6 +1325,13 @@ struct WindowSwitcherView: View {
                 // Check for Claude process (uses cached process tree, fast)
                 enriched.hasClaudeProcess = viewModel.hasClaudeProcess(ghosttyPid: window.pid)
 
+                // Apply hook state from ~/.claude-states/
+                let cwd = enriched.shellCwd ?? viewModel.getShellCwd(ghosttyPid: window.pid)
+                if let cwd = cwd {
+                    enriched.shellCwd = cwd
+                    enriched.hookState = viewModel.getHookState(forCwd: cwd)
+                }
+
                 return enriched
             }
 
@@ -1298,6 +1352,7 @@ struct WindowSwitcherView: View {
                         viewModel.windows[index].workstreamName = enrichedWindow.workstreamName
                         viewModel.windows[index].shellCwd = enrichedWindow.shellCwd
                         viewModel.windows[index].hasClaudeProcess = enrichedWindow.hasClaudeProcess
+                        viewModel.windows[index].hookState = enrichedWindow.hookState
                         logFunc("  ✅ Merged: '\(enrichedWindow.name)' (PID: \(enrichedWindow.pid))")
                     } else {
                         logFunc("  ⚠️ No match for: '\(enrichedWindow.name)' (PID: \(enrichedWindow.pid), axIndex: \(enrichedWindow.axIndex))")
