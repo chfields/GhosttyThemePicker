@@ -1,6 +1,7 @@
 import SwiftUI
 import Carbon
 import ApplicationServices
+import ServiceManagement
 
 // MARK: - App Delegate for early initialization
 
@@ -2255,6 +2256,11 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            GeneralSettingsView(themeManager: themeManager)
+                .tabItem {
+                    Label("General", systemImage: "gear")
+                }
+
             WorkstreamsSettingsView(themeManager: themeManager)
                 .tabItem {
                     Label("Workstreams", systemImage: "folder")
@@ -2279,17 +2285,36 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Workstreams Settings View
+// MARK: - General Settings View
 
-struct WorkstreamsSettingsView: View {
+struct GeneralSettingsView: View {
     @ObservedObject var themeManager: ThemeManager
-    @State private var showingAddSheet = false
-    @State private var showingExportSheet = false
-    @State private var editingWorkstream: Workstream?
-    @State private var selectedForExport: Set<UUID> = []
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            // Launch at Login
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Launch at Login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { newValue in
+                        do {
+                            if newValue {
+                                try SMAppService.mainApp.register()
+                            } else {
+                                try SMAppService.mainApp.unregister()
+                            }
+                        } catch {
+                            // Revert toggle if registration fails
+                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                        }
+                    }
+                Text("Automatically start Ghostty Theme Picker when you log in")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Divider()
+
             // Default Random Directory
             VStack(alignment: .leading, spacing: 4) {
                 Text("Default Random Directory")
@@ -2314,8 +2339,34 @@ struct WorkstreamsSettingsView: View {
                 themeManager.saveDefaultRandomDirectory()
             }
 
-            Divider()
+            Spacer()
+        }
+        .padding()
+    }
 
+    private func selectRandomDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        if panel.runModal() == .OK, let url = panel.url {
+            themeManager.defaultRandomDirectory = url.path
+        }
+    }
+}
+
+// MARK: - Workstreams Settings View
+
+struct WorkstreamsSettingsView: View {
+    @ObservedObject var themeManager: ThemeManager
+    @State private var showingAddSheet = false
+    @State private var showingExportSheet = false
+    @State private var editingWorkstream: Workstream?
+    @State private var selectedForExport: Set<UUID> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
             Text("Workstreams")
                 .font(.headline)
 
@@ -2442,16 +2493,6 @@ struct WorkstreamsSettingsView: View {
         }
     }
 
-    private func selectRandomDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-
-        if panel.runModal() == .OK, let url = panel.url {
-            themeManager.defaultRandomDirectory = url.path
-        }
-    }
 }
 
 // MARK: - Claude Hooks Settings View
