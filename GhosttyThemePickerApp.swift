@@ -116,7 +116,7 @@ struct GhosttyThemePickerApp: App {
         .windowResizability(.contentSize)
 
         Window("Quick Launch", id: "quicklaunch") {
-            QuickLaunchView(themeManager: themeManager)
+            QuickLaunchView(viewModel: QuickLaunchViewModel(themeManager: themeManager))
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
@@ -1435,7 +1435,7 @@ struct WindowSwitcherView: View {
 
 class QuickLaunchPanel {
     static let shared = QuickLaunchPanel()
-    private var panel: NSPanel?
+    private var panel: KeyHandlingPanel?
     private var themeManager: ThemeManager?
 
     func show(themeManager: ThemeManager?) {
@@ -1445,7 +1445,7 @@ class QuickLaunchPanel {
             existing.close()
         }
 
-        let panel = NSPanel(
+        let panel = KeyHandlingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 400),
             styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
@@ -1460,8 +1460,13 @@ class QuickLaunchPanel {
         panel.isReleasedWhenClosed = false
         panel.backgroundColor = NSColor.windowBackgroundColor
 
-        let view = QuickLaunchView(themeManager: themeManager ?? ThemeManager()) {
+        let viewModel = QuickLaunchViewModel(themeManager: themeManager ?? ThemeManager())
+        let view = QuickLaunchView(viewModel: viewModel) {
             panel.close()
+        }
+
+        panel.keyHandler = { event in
+            viewModel.handleKeyDown(event, onDismiss: { panel.close() })
         }
 
         panel.contentView = NSHostingView(rootView: view)
@@ -1479,16 +1484,115 @@ class QuickLaunchPanel {
     }
 }
 
+// MARK: - Quick Launch ViewModel
+
+enum QuickLaunchItem: Hashable {
+    case random
+    case workstream(UUID)
+    case favorite(String)
+    case recent(String)
+}
+
+class QuickLaunchViewModel: ObservableObject {
+    @ObservedObject var themeManager: ThemeManager
+    @Published var selectedIndex: Int = 0
+    @Published var windowName: String = ""
+
+    init(themeManager: ThemeManager) {
+        self.themeManager = themeManager
+    }
+
+    var allItems: [QuickLaunchItem] {
+        var items: [QuickLaunchItem] = [.random]
+        for ws in themeManager.workstreams {
+            items.append(.workstream(ws.id))
+        }
+        for theme in themeManager.favoriteThemes {
+            items.append(.favorite(theme))
+        }
+        for theme in themeManager.recentThemes {
+            items.append(.recent(theme))
+        }
+        return items
+    }
+
+    func handleKeyDown(_ event: NSEvent, onDismiss: @escaping () -> Void) -> Bool {
+        let items = allItems
+        guard !items.isEmpty else { return false }
+
+        switch Int(event.keyCode) {
+        case 126: // Up arrow
+            if selectedIndex > 0 {
+                selectedIndex -= 1
+            }
+            return true
+        case 125: // Down arrow
+            if selectedIndex < items.count - 1 {
+                selectedIndex += 1
+            }
+            return true
+        case 36: // Enter
+            activateItem(at: selectedIndex, onDismiss: onDismiss)
+            return true
+        case 53: // Escape
+            onDismiss()
+            return true
+        default:
+            return false
+        }
+    }
+
+    func activateItem(at index: Int, onDismiss: @escaping () -> Void) {
+        let items = allItems
+        guard index >= 0 && index < items.count else { return }
+
+        switch items[index] {
+        case .random:
+            if let theme = themeManager.pickRandomTheme() {
+                themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
+                windowName = ""
+            }
+        case .workstream(let id):
+            if let ws = themeManager.workstreams.first(where: { $0.id == id }) {
+                themeManager.launchWorkstream(ws)
+            }
+        case .favorite(let theme):
+            themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
+            windowName = ""
+        case .recent(let theme):
+            themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
+            windowName = ""
+        }
+        onDismiss()
+    }
+}
+
 // MARK: - Quick Launch View
 
 struct QuickLaunchView: View {
-    @ObservedObject var themeManager: ThemeManager
+    @ObservedObject var viewModel: QuickLaunchViewModel
     var onDismiss: (() -> Void)?
-    @State private var windowName: String = ""
 
-    init(themeManager: ThemeManager, onDismiss: (() -> Void)? = nil) {
-        self.themeManager = themeManager
+    init(viewModel: QuickLaunchViewModel, onDismiss: (() -> Void)? = nil) {
+        self.viewModel = viewModel
         self.onDismiss = onDismiss
+    }
+
+    private var themeManager: ThemeManager { viewModel.themeManager }
+
+    private func itemIndex(for item: QuickLaunchItem) -> Int {
+        viewModel.allItems.firstIndex(of: item) ?? -1
+    }
+
+    private func isSelected(_ item: QuickLaunchItem) -> Bool {
+        itemIndex(for: item) == viewModel.selectedIndex
+    }
+
+    private func rowBackground(for item: QuickLaunchItem) -> Color {
+        if isSelected(item) {
+            return Color.accentColor.opacity(0.2)
+        }
+        return Color(NSColor.controlBackgroundColor).opacity(0.5)
     }
 
     var body: some View {
@@ -1509,152 +1613,167 @@ struct QuickLaunchView: View {
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    // Window Name (optional)
-                    HStack {
-                        Image(systemName: "tag")
-                            .frame(width: 24)
-                            .foregroundColor(.secondary)
-                        TextField("Window name (optional)", text: $windowName)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-
-                    // Random Theme
-                    Button {
-                        if let theme = themeManager.pickRandomTheme() {
-                            themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
-                            windowName = ""
-                        }
-                        onDismiss?()
-                    } label: {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        // Window Name (optional)
                         HStack {
-                            Image(systemName: "dice")
+                            Image(systemName: "tag")
                                 .frame(width: 24)
-                            Text("Random Theme")
-                            Spacer()
-                            Text("New window with random theme")
-                                .font(.caption)
                                 .foregroundColor(.secondary)
+                            TextField("Window name (optional)", text: $viewModel.windowName)
+                                .textFieldStyle(.roundedBorder)
                         }
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
-                        .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
+                        .padding(.vertical, 4)
 
-                    // Workstreams
-                    if !themeManager.workstreams.isEmpty {
-                        Text("WORKSTREAMS")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.top, 8)
+                        // Random Theme
+                        let randomItem = QuickLaunchItem.random
+                        Button {
+                            viewModel.activateItem(at: itemIndex(for: randomItem), onDismiss: { onDismiss?() })
+                        } label: {
+                            HStack {
+                                Image(systemName: "dice")
+                                    .frame(width: 24)
+                                Text("Random Theme")
+                                Spacer()
+                                Text("New window with random theme")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(rowBackground(for: randomItem))
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        .id(randomItem)
 
-                        ForEach(themeManager.workstreams) { workstream in
-                            Button {
-                                themeManager.launchWorkstream(workstream)
-                                onDismiss?()
-                            } label: {
-                                HStack {
-                                    ThemeSwatchView(colors: themeManager.getThemeColors(workstream.theme))
-                                    VStack(alignment: .leading) {
-                                        Text(workstream.name)
-                                        if let dir = workstream.directory {
-                                            Text(dir)
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                                .lineLimit(1)
+                        // Workstreams
+                        if !themeManager.workstreams.isEmpty {
+                            Text("WORKSTREAMS")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.top, 8)
+
+                            ForEach(themeManager.workstreams) { workstream in
+                                let item = QuickLaunchItem.workstream(workstream.id)
+                                Button {
+                                    viewModel.activateItem(at: itemIndex(for: item), onDismiss: { onDismiss?() })
+                                } label: {
+                                    HStack {
+                                        ThemeSwatchView(colors: themeManager.getThemeColors(workstream.theme))
+                                        VStack(alignment: .leading) {
+                                            Text(workstream.name)
+                                            if let dir = workstream.directory {
+                                                Text(dir)
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                    .lineLimit(1)
+                                            }
                                         }
+                                        Spacer()
+                                        Text(workstream.theme)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
                                     }
-                                    Spacer()
-                                    Text(workstream.theme)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(rowBackground(for: item))
+                                    .cornerRadius(6)
                                 }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
-                                .cornerRadius(6)
+                                .buttonStyle(.plain)
+                                .id(item)
                             }
-                            .buttonStyle(.plain)
+                        }
+
+                        // Favorites
+                        if !themeManager.favoriteThemes.isEmpty {
+                            Text("FAVORITES")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.top, 8)
+
+                            ForEach(themeManager.favoriteThemes, id: \.self) { theme in
+                                let item = QuickLaunchItem.favorite(theme)
+                                Button {
+                                    viewModel.activateItem(at: itemIndex(for: item), onDismiss: { onDismiss?() })
+                                } label: {
+                                    HStack {
+                                        ThemeSwatchView(colors: themeManager.getThemeColors(theme))
+                                        Image(systemName: "star.fill")
+                                            .foregroundColor(.yellow)
+                                            .font(.caption)
+                                        Text(theme)
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(rowBackground(for: item))
+                                    .cornerRadius(6)
+                                }
+                                .buttonStyle(.plain)
+                                .id(item)
+                            }
+                        }
+
+                        // Recent
+                        if !themeManager.recentThemes.isEmpty {
+                            Text("RECENT")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.top, 8)
+
+                            ForEach(themeManager.recentThemes, id: \.self) { theme in
+                                let item = QuickLaunchItem.recent(theme)
+                                Button {
+                                    viewModel.activateItem(at: itemIndex(for: item), onDismiss: { onDismiss?() })
+                                } label: {
+                                    HStack {
+                                        ThemeSwatchView(colors: themeManager.getThemeColors(theme))
+                                        Image(systemName: "clock")
+                                            .foregroundColor(.secondary)
+                                            .font(.caption)
+                                        Text(theme)
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(rowBackground(for: item))
+                                    .cornerRadius(6)
+                                }
+                                .buttonStyle(.plain)
+                                .id(item)
+                            }
                         }
                     }
-
-                    // Favorites
-                    if !themeManager.favoriteThemes.isEmpty {
-                        Text("FAVORITES")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.top, 8)
-
-                        ForEach(themeManager.favoriteThemes, id: \.self) { theme in
-                            Button {
-                                themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
-                                windowName = ""
-                                onDismiss?()
-                            } label: {
-                                HStack {
-                                    ThemeSwatchView(colors: themeManager.getThemeColors(theme))
-                                    Image(systemName: "star.fill")
-                                        .foregroundColor(.yellow)
-                                        .font(.caption)
-                                    Text(theme)
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
-                                .cornerRadius(6)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-
-                    // Recent
-                    if !themeManager.recentThemes.isEmpty {
-                        Text("RECENT")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.top, 8)
-
-                        ForEach(themeManager.recentThemes, id: \.self) { theme in
-                            Button {
-                                themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
-                                windowName = ""
-                                onDismiss?()
-                            } label: {
-                                HStack {
-                                    ThemeSwatchView(colors: themeManager.getThemeColors(theme))
-                                    Image(systemName: "clock")
-                                        .foregroundColor(.secondary)
-                                        .font(.caption)
-                                    Text(theme)
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
-                                .cornerRadius(6)
-                            }
-                            .buttonStyle(.plain)
+                    .padding()
+                }
+                .onChange(of: viewModel.selectedIndex) { _ in
+                    let items = viewModel.allItems
+                    if viewModel.selectedIndex >= 0 && viewModel.selectedIndex < items.count {
+                        withAnimation {
+                            proxy.scrollTo(items[viewModel.selectedIndex], anchor: .center)
                         }
                     }
                 }
-                .padding()
             }
 
             Divider()
 
             // Footer
             HStack {
-                Text("Press Esc to close")
+                Text("↑↓ Navigate")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text("↩ Launch")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text("⎋ Close")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
