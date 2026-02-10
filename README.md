@@ -1,8 +1,14 @@
 # Ghostty Theme Picker
 
-A simple macOS menu bar app that launches [Ghostty](https://ghostty.org) with a randomly selected theme from the 300+ built-in themes.
+**The missing control panel for running multiple [Claude Code](https://github.com/anthropics/claude-code) sessions.**
 
-A great way to run multiple [Claude Code](https://github.com/anthropics/claude-code) sessions with different themes to help you visually track your different workstreams.
+If you're running 3, 5, or 10 Claude Code sessions at once, you know the problem: they all look the same. You alt-tab through a stack of identical terminals trying to remember which one is your backend, which is your frontend, and which one finished five minutes ago and is waiting for you.
+
+Ghostty Theme Picker fixes this. Each session gets a distinct theme from Ghostty's 300+ built-in options, so you can tell them apart at a glance. The **Window Switcher** (⌃⌥P) shows all your sessions in one panel — sorted by state, so the ones waiting for your input float to the top. **Workstreams** let you define your daily setup (theme + directory + auto-launch Claude) and spin everything up with one click.
+
+Have a **Stream Deck**? It gets even better. Install the plugin straight from Settings and get a physical button for each Claude session — color-coded by state, so you can see across the room which ones need you. Tap a button to focus that window. Tap another to launch a workstream or spin up a random theme. It turns your Stream Deck into a Claude Code mission control.
+
+It's a macOS menu bar app for [Ghostty](https://ghostty.org). No Dock icon, no clutter — just a lightweight tool that makes multi-session Claude Code actually manageable.
 
 [![Build](https://github.com/chfields/GhosttyThemePicker/actions/workflows/build.yml/badge.svg)](https://github.com/chfields/GhosttyThemePicker/actions/workflows/build.yml)
 [![CodeQL](https://github.com/chfields/GhosttyThemePicker/actions/workflows/codeql.yml/badge.svg)](https://github.com/chfields/GhosttyThemePicker/actions/workflows/codeql.yml)
