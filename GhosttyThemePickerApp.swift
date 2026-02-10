@@ -111,7 +111,7 @@ struct GhosttyThemePickerApp: App {
         }
 
         Window("Settings", id: "workstreams") {
-            SettingsView(themeManager: themeManager)
+            SettingsView(themeManager: themeManager, hotkeyManager: hotkeyManager)
         }
         .windowResizability(.contentSize)
 
@@ -124,50 +124,153 @@ struct GhosttyThemePickerApp: App {
     }
 }
 
+// MARK: - Hotkey Config
+
+struct HotkeyConfig: Codable, Equatable {
+    var keyCode: UInt32
+    var modifiers: UInt32  // Carbon modifier flags
+    var enabled: Bool
+
+    static let defaultQuickLaunch = HotkeyConfig(keyCode: 5, modifiers: UInt32(controlKey | optionKey), enabled: true)
+    static let defaultWindowSwitcher = HotkeyConfig(keyCode: 35, modifiers: UInt32(controlKey | optionKey), enabled: true)
+
+    var displayString: String {
+        var parts: [String] = []
+        if modifiers & UInt32(controlKey) != 0 { parts.append("⌃") }
+        if modifiers & UInt32(optionKey) != 0 { parts.append("⌥") }
+        if modifiers & UInt32(shiftKey) != 0 { parts.append("⇧") }
+        if modifiers & UInt32(cmdKey) != 0 { parts.append("⌘") }
+        parts.append(keyCodeToString(keyCode))
+        return parts.joined()
+    }
+}
+
+func keyCodeToString(_ keyCode: UInt32) -> String {
+    let map: [UInt32: String] = [
+        0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X",
+        8: "C", 9: "V", 11: "B", 12: "Q", 13: "W", 14: "E", 15: "R",
+        16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6",
+        23: "5", 24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0",
+        30: "]", 31: "O", 32: "U", 33: "[", 34: "I", 35: "P", 36: "↩",
+        37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",",
+        44: "/", 45: "N", 46: ".", 47: "M", 48: "⇥", 49: "Space",
+        50: "`", 51: "⌫", 53: "⎋",
+        // F-keys
+        96: "F5", 97: "F6", 98: "F7", 99: "F3", 100: "F8",
+        101: "F9", 109: "F10", 103: "F11", 111: "F12",
+        105: "F13", 107: "F14", 113: "F15",
+        118: "F4", 120: "F2", 122: "F1",
+        // Arrow keys
+        123: "←", 124: "→", 125: "↓", 126: "↑",
+    ]
+    return map[keyCode] ?? "Key\(keyCode)"
+}
+
+func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
+    var mods: UInt32 = 0
+    if flags.contains(.control) { mods |= UInt32(controlKey) }
+    if flags.contains(.option) { mods |= UInt32(optionKey) }
+    if flags.contains(.shift) { mods |= UInt32(shiftKey) }
+    if flags.contains(.command) { mods |= UInt32(cmdKey) }
+    return mods
+}
+
 // MARK: - Hotkey Manager (Carbon-based)
 
 class HotkeyManager: ObservableObject {
     var themeManager: ThemeManager?
     private var hotkeyRefG: EventHotKeyRef?
     private var hotkeyRefP: EventHotKeyRef?
+    private var eventHandlerInstalled = false
     static var instance: HotkeyManager?
+
+    @Published var quickLaunchConfig: HotkeyConfig = .defaultQuickLaunch
+    @Published var windowSwitcherConfig: HotkeyConfig = .defaultWindowSwitcher
+
+    private static let quickLaunchKey = "HotkeyQuickLaunch"
+    private static let windowSwitcherKey = "HotkeyWindowSwitcher"
+
+    func loadFromDefaults() {
+        if let data = UserDefaults.standard.data(forKey: Self.quickLaunchKey),
+           let config = try? JSONDecoder().decode(HotkeyConfig.self, from: data) {
+            quickLaunchConfig = config
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.windowSwitcherKey),
+           let config = try? JSONDecoder().decode(HotkeyConfig.self, from: data) {
+            windowSwitcherConfig = config
+        }
+    }
+
+    func saveToDefaults() {
+        if let data = try? JSONEncoder().encode(quickLaunchConfig) {
+            UserDefaults.standard.set(data, forKey: Self.quickLaunchKey)
+        }
+        if let data = try? JSONEncoder().encode(windowSwitcherConfig) {
+            UserDefaults.standard.set(data, forKey: Self.windowSwitcherKey)
+        }
+    }
 
     func registerHotkey() {
         HotkeyManager.instance = self
+        loadFromDefaults()
 
-        let modifiers: UInt32 = UInt32(controlKey | optionKey)
+        if !eventHandlerInstalled {
+            var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
 
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
+                var hotKeyID = EventHotKeyID()
+                GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
 
-        InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
-            var hotKeyID = EventHotKeyID()
-            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+                if hotKeyID.id == 1 {
+                    HotkeyManager.instance?.handleHotkeyG()
+                } else if hotKeyID.id == 2 {
+                    HotkeyManager.instance?.handleHotkeyP()
+                }
+                return noErr
+            }, 1, &eventType, nil, nil)
 
-            if hotKeyID.id == 1 {
-                HotkeyManager.instance?.handleHotkeyG()
-            } else if hotKeyID.id == 2 {
-                HotkeyManager.instance?.handleHotkeyP()
-            }
-            return noErr
-        }, 1, &eventType, nil, nil)
-
-        // Register Control+Option+G (Quick Launch)
-        var hotKeyIDG = EventHotKeyID()
-        hotKeyIDG.signature = OSType(0x4754504B) // "GTPK"
-        hotKeyIDG.id = 1
-        let statusG = RegisterEventHotKey(5, modifiers, hotKeyIDG, GetApplicationEventTarget(), 0, &hotkeyRefG) // G = keycode 5
-
-        // Register Control+Option+P (Window Switcher)
-        var hotKeyIDP = EventHotKeyID()
-        hotKeyIDP.signature = OSType(0x4754504B) // "GTPK"
-        hotKeyIDP.id = 2
-        let statusP = RegisterEventHotKey(35, modifiers, hotKeyIDP, GetApplicationEventTarget(), 0, &hotkeyRefP) // P = keycode 35
-
-        if statusG == noErr {
-            print("Global hotkey registered: ⌃⌥G (Quick Launch)")
+            eventHandlerInstalled = true
         }
-        if statusP == noErr {
-            print("Global hotkey registered: ⌃⌥P (Window Switcher)")
+
+        registerConfiguredHotkeys()
+    }
+
+    func reregisterHotkeys() {
+        unregisterAll()
+        registerConfiguredHotkeys()
+        saveToDefaults()
+    }
+
+    private func registerConfiguredHotkeys() {
+        if quickLaunchConfig.enabled {
+            var hotKeyIDG = EventHotKeyID()
+            hotKeyIDG.signature = OSType(0x4754504B) // "GTPK"
+            hotKeyIDG.id = 1
+            let status = RegisterEventHotKey(quickLaunchConfig.keyCode, quickLaunchConfig.modifiers, hotKeyIDG, GetApplicationEventTarget(), 0, &hotkeyRefG)
+            if status == noErr {
+                print("Global hotkey registered: \(quickLaunchConfig.displayString) (Quick Launch)")
+            }
+        }
+
+        if windowSwitcherConfig.enabled {
+            var hotKeyIDP = EventHotKeyID()
+            hotKeyIDP.signature = OSType(0x4754504B) // "GTPK"
+            hotKeyIDP.id = 2
+            let status = RegisterEventHotKey(windowSwitcherConfig.keyCode, windowSwitcherConfig.modifiers, hotKeyIDP, GetApplicationEventTarget(), 0, &hotkeyRefP)
+            if status == noErr {
+                print("Global hotkey registered: \(windowSwitcherConfig.displayString) (Window Switcher)")
+            }
+        }
+    }
+
+    private func unregisterAll() {
+        if let ref = hotkeyRefG {
+            UnregisterEventHotKey(ref)
+            hotkeyRefG = nil
+        }
+        if let ref = hotkeyRefP {
+            UnregisterEventHotKey(ref)
+            hotkeyRefP = nil
         }
     }
 
@@ -184,12 +287,7 @@ class HotkeyManager: ObservableObject {
     }
 
     deinit {
-        if let ref = hotkeyRefG {
-            UnregisterEventHotKey(ref)
-        }
-        if let ref = hotkeyRefP {
-            UnregisterEventHotKey(ref)
-        }
+        unregisterAll()
     }
 }
 
@@ -1978,6 +2076,7 @@ struct MenuContent: View {
 
 struct SettingsView: View {
     @ObservedObject var themeManager: ThemeManager
+    @ObservedObject var hotkeyManager: HotkeyManager
 
     var body: some View {
         TabView {
@@ -1994,6 +2093,11 @@ struct SettingsView: View {
             StreamDeckSettingsView()
                 .tabItem {
                     Label("Stream Deck", systemImage: "square.grid.3x3")
+                }
+
+            HotkeysSettingsView(hotkeyManager: hotkeyManager)
+                .tabItem {
+                    Label("Hotkeys", systemImage: "keyboard")
                 }
         }
         .frame(width: 500, height: 400)
@@ -2554,6 +2658,191 @@ struct StreamDeckSettingsView: View {
                     errorMessage = error.localizedDescription
                 }
             }
+        }
+    }
+}
+
+// MARK: - Hotkeys Settings View
+
+struct HotkeysSettingsView: View {
+    @ObservedObject var hotkeyManager: HotkeyManager
+    @State private var recordingTarget: RecordingTarget?
+    @State private var eventMonitor: Any?
+    @State private var conflictWarning: String?
+
+    enum RecordingTarget {
+        case quickLaunch
+        case windowSwitcher
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Global Hotkeys")
+                .font(.headline)
+
+            Text("Customize keyboard shortcuts for Quick Launch and Window Switcher.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            GroupBox {
+                VStack(spacing: 0) {
+                    hotkeyRow(
+                        label: "Quick Launch",
+                        config: $hotkeyManager.quickLaunchConfig,
+                        target: .quickLaunch,
+                        defaultConfig: .defaultQuickLaunch
+                    )
+
+                    Divider()
+
+                    hotkeyRow(
+                        label: "Window Switcher",
+                        config: $hotkeyManager.windowSwitcherConfig,
+                        target: .windowSwitcher,
+                        defaultConfig: .defaultWindowSwitcher
+                    )
+                }
+            }
+
+            if let warning = conflictWarning {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(warning)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+
+            HStack {
+                Image(systemName: "info.circle")
+                    .foregroundColor(.secondary)
+                Text("Press Record, then press your desired key combination. At least one modifier key (⌃⌥⇧⌘) is required.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            HStack {
+                Spacer()
+                Button("Reset All") {
+                    hotkeyManager.quickLaunchConfig = .defaultQuickLaunch
+                    hotkeyManager.windowSwitcherConfig = .defaultWindowSwitcher
+                    hotkeyManager.reregisterHotkeys()
+                    conflictWarning = nil
+                }
+                .disabled(
+                    hotkeyManager.quickLaunchConfig == .defaultQuickLaunch &&
+                    hotkeyManager.windowSwitcherConfig == .defaultWindowSwitcher
+                )
+            }
+        }
+        .padding()
+    }
+
+    @ViewBuilder
+    private func hotkeyRow(
+        label: String,
+        config: Binding<HotkeyConfig>,
+        target: RecordingTarget,
+        defaultConfig: HotkeyConfig
+    ) -> some View {
+        HStack(spacing: 12) {
+            Toggle(label, isOn: config.enabled)
+                .onChange(of: config.wrappedValue.enabled) { _ in
+                    checkConflicts()
+                    hotkeyManager.reregisterHotkeys()
+                }
+                .frame(width: 150, alignment: .leading)
+
+            if recordingTarget == target {
+                Text("Press keys...")
+                    .font(.system(.body, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.2))
+                    .cornerRadius(4)
+                    .frame(minWidth: 80)
+            } else {
+                Text(config.wrappedValue.displayString)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(4)
+                    .frame(minWidth: 80)
+            }
+
+            Button(recordingTarget == target ? "Cancel" : "Record") {
+                if recordingTarget == target {
+                    stopRecording()
+                } else {
+                    startRecording(for: target)
+                }
+            }
+            .buttonStyle(.bordered)
+
+            Button("Reset") {
+                config.wrappedValue = defaultConfig
+                checkConflicts()
+                hotkeyManager.reregisterHotkeys()
+            }
+            .disabled(config.wrappedValue == defaultConfig)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+    }
+
+    private func startRecording(for target: RecordingTarget) {
+        recordingTarget = target
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            if event.keyCode == 53 { // Escape
+                stopRecording()
+                return nil
+            }
+
+            let mods = carbonModifiers(from: event.modifierFlags)
+            if mods == 0 {
+                // No modifier pressed, ignore
+                return nil
+            }
+
+            let newConfig = HotkeyConfig(
+                keyCode: UInt32(event.keyCode),
+                modifiers: mods,
+                enabled: true
+            )
+
+            switch target {
+            case .quickLaunch:
+                hotkeyManager.quickLaunchConfig = newConfig
+            case .windowSwitcher:
+                hotkeyManager.windowSwitcherConfig = newConfig
+            }
+
+            stopRecording()
+            checkConflicts()
+            hotkeyManager.reregisterHotkeys()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
+        }
+        recordingTarget = nil
+    }
+
+    private func checkConflicts() {
+        let q = hotkeyManager.quickLaunchConfig
+        let w = hotkeyManager.windowSwitcherConfig
+        if q.enabled && w.enabled && q.keyCode == w.keyCode && q.modifiers == w.modifiers {
+            conflictWarning = "Both hotkeys are set to the same shortcut (\(q.displayString)). Only Quick Launch will be registered."
+        } else {
+            conflictWarning = nil
         }
     }
 }
