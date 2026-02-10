@@ -60,6 +60,7 @@ class ThemeManager: ObservableObject {
     @Published var excludedThemes: [String] = []
     @Published var workstreams: [Workstream] = []
     @Published var lastSelectedTheme: String?
+    @Published var defaultRandomDirectory: String = ""
 
     // Cache of launched window PIDs -> workstream names (for window switcher)
     @Published var launchedWindows: [pid_t: String] = [:]
@@ -72,12 +73,14 @@ class ThemeManager: ObservableObject {
     private let favoriteThemesKey = "FavoriteThemes"
     private let excludedThemesKey = "ExcludedThemes"
     private let workstreamsKey = "Workstreams"
+    private let defaultRandomDirectoryKey = "DefaultRandomDirectory"
 
     init() {
         loadRecentThemes()
         loadFavoriteThemes()
         loadExcludedThemes()
         loadWorkstreams()
+        loadDefaultRandomDirectory()
         fetchThemes()
     }
 
@@ -173,20 +176,12 @@ class ThemeManager: ObservableObject {
 
             let pid = process.processIdentifier
 
-            // Generate window name: use provided name, or auto-generate from theme
-            let windowName: String
-            if let providedName = name, !providedName.isEmpty {
-                windowName = providedName
-            } else {
-                // Auto-generate: "Dracula" for first, "Dracula #2" for second, etc.
-                let number = nextWindowNumber(for: theme)
-                windowName = number == 1 ? theme : "\(theme) #\(number)"
-            }
-
             DispatchQueue.main.async {
-                // Track for Window Switcher
-                self.launchedWindows[pid] = windowName
-                // Track theme by PID for "Save as Workstream" feature
+                // Only store a nickname when the caller explicitly provided one
+                if let providedName = name, !providedName.isEmpty {
+                    self.launchedWindows[pid] = providedName
+                }
+                // Always track theme by PID for "Save as Workstream" feature
                 self.launchedThemes[pid] = theme
             }
 
@@ -470,6 +465,18 @@ class ThemeManager: ObservableObject {
         if let encoded = try? JSONEncoder().encode(workstreams) {
             UserDefaults.standard.set(encoded, forKey: workstreamsKey)
         }
+    }
+
+    // MARK: - Default Random Directory
+
+    private func loadDefaultRandomDirectory() {
+        if let saved = UserDefaults.standard.string(forKey: defaultRandomDirectoryKey) {
+            defaultRandomDirectory = saved
+        }
+    }
+
+    func saveDefaultRandomDirectory() {
+        UserDefaults.standard.set(defaultRandomDirectory, forKey: defaultRandomDirectoryKey)
     }
 
     func exportWorkstreams(_ selected: [Workstream]? = nil) -> Data? {

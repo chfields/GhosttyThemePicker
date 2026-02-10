@@ -37,9 +37,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                   let theme = themeManager.pickRandomTheme() else {
                 return nil
             }
-            let windowName = theme
-            themeManager.launchGhostty(withTheme: theme, name: windowName)
-            return (theme: theme, windowName: windowName)
+            let dir = themeManager.defaultRandomDirectory.isEmpty ? nil : themeManager.defaultRandomDirectory
+            themeManager.launchGhostty(withTheme: theme, inDirectory: dir, name: nil)
+            return (theme: theme, windowName: theme)
         }
 
         APIServer.shared.workstreamsProvider = {
@@ -1549,7 +1549,8 @@ class QuickLaunchViewModel: ObservableObject {
         switch items[index] {
         case .random:
             if let theme = themeManager.pickRandomTheme() {
-                themeManager.launchGhostty(withTheme: theme, name: windowName.isEmpty ? nil : windowName)
+                let dir = themeManager.defaultRandomDirectory.isEmpty ? nil : themeManager.defaultRandomDirectory
+                themeManager.launchGhostty(withTheme: theme, inDirectory: dir, name: windowName.isEmpty ? nil : windowName)
                 windowName = ""
             }
         case .workstream(let id):
@@ -2289,6 +2290,32 @@ struct WorkstreamsSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            // Default Random Directory
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Default Random Directory")
+                    .font(.headline)
+                HStack {
+                    TextField("/path/to/folder", text: $themeManager.defaultRandomDirectory)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Browse...") {
+                        selectRandomDirectory()
+                    }
+                    Button("Clear") {
+                        themeManager.defaultRandomDirectory = ""
+                        themeManager.saveDefaultRandomDirectory()
+                    }
+                    .disabled(themeManager.defaultRandomDirectory.isEmpty)
+                }
+                Text("New windows from Random Theme will open in this directory")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .onChange(of: themeManager.defaultRandomDirectory) { _ in
+                themeManager.saveDefaultRandomDirectory()
+            }
+
+            Divider()
+
             Text("Workstreams")
                 .font(.headline)
 
@@ -2412,6 +2439,17 @@ struct WorkstreamsSettingsView: View {
                     // Show brief confirmation - workstreams will appear in list
                 }
             }
+        }
+    }
+
+    private func selectRandomDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        if panel.runModal() == .OK, let url = panel.url {
+            themeManager.defaultRandomDirectory = url.path
         }
     }
 }
