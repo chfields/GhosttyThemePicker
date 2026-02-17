@@ -1,4 +1,4 @@
-# Ghostty Theme Picker
+# Ghostty Theme Picker — Multi-Session Claude Code Manager
 
 **The missing control panel for running multiple [Claude Code](https://github.com/anthropics/claude-code) sessions.**
 
@@ -6,7 +6,15 @@ If you're running 3, 5, or 10 Claude Code sessions at once, you know the problem
 
 Ghostty Theme Picker fixes this. Each session gets a distinct theme from Ghostty's 300+ built-in options, so you can tell them apart at a glance. The **Window Switcher** (⌃⌥P) shows all your sessions in one panel — sorted by state, so the ones waiting for your input float to the top. **Workstreams** let you define your daily setup (theme + directory + auto-launch Claude) and spin everything up with one click.
 
-Have a **Stream Deck**? It gets even better. Install the plugin straight from Settings and get a physical button for each Claude session — color-coded by state, so you can see across the room which ones need you. Tap a button to focus that window. Tap another to launch a workstream or spin up a random theme. It turns your Stream Deck into a Claude Code mission control.
+Have a **Stream Deck**? It gets even better. Install the plugin straight from Settings and get a physical button for each Claude session — color-coded by state, so you can see across the room which ones need you. Each button shows the workstream name and lights up green when Claude is waiting for input, blue when it's working, or gray when idle. Dedicated buttons let you launch workstreams or roll a random theme with a dice icon. Tap any button to focus that window. It turns your [Stream Deck](https://www.elgato.com/us/en/p/stream-deck-mk2-black) into a Claude Code mission control.
+
+<p align="center">
+  <a href="https://www.elgato.com/us/en/p/stream-deck-mk2-black">
+    <img src="images/stream-deck.png" alt="Elgato Stream Deck MK.2" width="400">
+  </a>
+  <br>
+  <em>The <a href="https://www.elgato.com/us/en/p/stream-deck-mk2-black">Elgato Stream Deck MK.2</a> — 15 programmable buttons for your Claude sessions</em>
+</p>
 
 It's a macOS menu bar app for [Ghostty](https://ghostty.org). No Dock icon, no clutter — just a lightweight tool that makes multi-session Claude Code actually manageable.
 
