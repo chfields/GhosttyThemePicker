@@ -26,6 +26,9 @@ class HookInstaller {
     /// Comment marker to identify our hooks in settings.json
     private let hookMarker = "GhosttyThemePicker"
 
+    /// PreToolUse matcher for the AskUserQuestion tool (treated as "asking", same as a permission prompt)
+    private let askQuestionMatcher = "AskUserQuestion"
+
     // MARK: - Public Methods
 
     /// Check if hooks are installed and configured
@@ -163,6 +166,20 @@ class HookInstaller {
             return false
         }
 
+        // Check for PreToolUse hook (AskUserQuestion) with our marker
+        if let preToolUseHooks = hooks["PreToolUse"] as? [[String: Any]] {
+            let hasAskQuestionHook = preToolUseHooks.contains { hook in
+                guard let hookList = hook["hooks"] as? [[String: Any]] else { return false }
+                return (hook["matcher"] as? String) == askQuestionMatcher &&
+                    hookList.contains { h in
+                        (h["command"] as? String)?.contains(permissionHookFilename) == true
+                    }
+            }
+            if !hasAskQuestionHook { return false }
+        } else {
+            return false
+        }
+
         return true
     }
 
@@ -232,6 +249,34 @@ class HookInstaller {
             hooks["Notification"] = [permissionHookConfig]
         }
 
+        // Configure PreToolUse hook (AskUserQuestion) - a pending question is also "asking",
+        // so it reuses the same permission-hook.sh script.
+        let askQuestionHookConfig: [String: Any] = [
+            "matcher": askQuestionMatcher,
+            "hooks": [
+                [
+                    "type": "command",
+                    "command": permissionHookPath,
+                    "async": true
+                ]
+            ]
+        ]
+
+        // Add or update PreToolUse hooks (preserving any unrelated PreToolUse hooks already there)
+        if var preToolUseHooks = hooks["PreToolUse"] as? [[String: Any]] {
+            preToolUseHooks.removeAll { hook in
+                guard let hookList = hook["hooks"] as? [[String: Any]] else { return false }
+                return (hook["matcher"] as? String) == askQuestionMatcher &&
+                    hookList.contains { h in
+                        (h["command"] as? String)?.contains(permissionHookFilename) == true
+                    }
+            }
+            preToolUseHooks.append(askQuestionHookConfig)
+            hooks["PreToolUse"] = preToolUseHooks
+        } else {
+            hooks["PreToolUse"] = [askQuestionHookConfig]
+        }
+
         settings["hooks"] = hooks
         try saveSettings(settings)
     }
@@ -272,6 +317,22 @@ class HookInstaller {
                 hooks.removeValue(forKey: "Notification")
             } else {
                 hooks["Notification"] = notificationHooks
+            }
+        }
+
+        // Remove our PreToolUse hook (AskUserQuestion), preserving any unrelated PreToolUse hooks
+        if var preToolUseHooks = hooks["PreToolUse"] as? [[String: Any]] {
+            preToolUseHooks.removeAll { hook in
+                guard let hookList = hook["hooks"] as? [[String: Any]] else { return false }
+                return (hook["matcher"] as? String) == askQuestionMatcher &&
+                    hookList.contains { h in
+                        (h["command"] as? String)?.contains(permissionHookFilename) == true
+                    }
+            }
+            if preToolUseHooks.isEmpty {
+                hooks.removeValue(forKey: "PreToolUse")
+            } else {
+                hooks["PreToolUse"] = preToolUseHooks
             }
         }
 
