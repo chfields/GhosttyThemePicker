@@ -552,9 +552,11 @@ struct GhosttyWindow: Identifiable {
                 }
                 return .waiting
             }
-            // Braille spinner characters = working
-            let spinnerChars: Set<Character> = ["⠁", "⠂", "⠄", "⠈", "⠐", "⠠", "⡀", "⢀"]
-            if spinnerChars.contains(firstChar) {
+            // Spinner characters (any frame, any spinner style) = working.
+            // Covers Braille Patterns (dot spinners) and Geometric Shapes
+            // (e.g. ◐◓◑◒ rotating-circle spinners) — Claude Code has used both over time.
+            if let scalar = firstChar.unicodeScalars.first,
+               (0x2800...0x28FF).contains(scalar.value) || (0x25A0...0x25FF).contains(scalar.value) {
                 return .working
             }
         }
