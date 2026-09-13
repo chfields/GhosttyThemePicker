@@ -284,14 +284,22 @@ class WindowTracker: ObservableObject {
         }
     }
 
+    /// How long a hook-written state (e.g. "asking") stays valid before we stop trusting it.
+    /// Guards against a stuck state when the hook that's supposed to clear it (Stop) never
+    /// fires for a given session/profile - falls back to title/process detection instead.
+    private let hookStateStaleness: TimeInterval = 120
+
     private func getHookState(forCwd cwd: String) -> String? {
+        let now = Date().timeIntervalSince1970
+
         // Direct match
-        if let cached = hookStateCache[cwd] {
+        if let cached = hookStateCache[cwd], now - cached.timestamp <= hookStateStaleness {
             return cached.state
         }
 
         // Try matching by subdirectory (hook might be running in a subdirectory)
         for (cachedCwd, cached) in hookStateCache {
+            guard now - cached.timestamp <= hookStateStaleness else { continue }
             if cwd.hasPrefix(cachedCwd + "/") || cachedCwd.hasPrefix(cwd + "/") {
                 return cached.state
             }

@@ -742,11 +742,18 @@ class WindowSwitcherViewModel: ObservableObject {
         }
     }
 
+    /// How long a hook-written state (e.g. "asking") stays valid before we stop trusting it.
+    /// Guards against a stuck state when the hook that's supposed to clear it (Stop) never
+    /// fires for a given session/profile - falls back to title/process detection instead.
+    private let hookStateStaleness: TimeInterval = 120
+
     func getHookState(forCwd cwd: String) -> String? {
-        if let cached = hookStateCache[cwd] {
+        let now = Date().timeIntervalSince1970
+        if let cached = hookStateCache[cwd], now - cached.timestamp <= hookStateStaleness {
             return cached.state
         }
         for (cachedCwd, cached) in hookStateCache {
+            guard now - cached.timestamp <= hookStateStaleness else { continue }
             if cwd.hasPrefix(cachedCwd + "/") || cachedCwd.hasPrefix(cwd + "/") {
                 return cached.state
             }

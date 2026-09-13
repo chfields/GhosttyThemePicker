@@ -180,6 +180,19 @@ class HookInstaller {
             return false
         }
 
+        // Check for UserPromptSubmit hook with our marker
+        if let userPromptHooks = hooks["UserPromptSubmit"] as? [[String: Any]] {
+            let hasStateHook = userPromptHooks.contains { hook in
+                guard let hookList = hook["hooks"] as? [[String: Any]] else { return false }
+                return hookList.contains { h in
+                    (h["command"] as? String)?.contains(stateHookFilename) == true
+                }
+            }
+            if !hasStateHook { return false }
+        } else {
+            return false
+        }
+
         return true
     }
 
@@ -277,6 +290,33 @@ class HookInstaller {
             hooks["PreToolUse"] = [askQuestionHookConfig]
         }
 
+        // Configure UserPromptSubmit hook - a backstop that clears a stuck "asking"/"waiting"
+        // state when Stop doesn't fire for a given session (e.g. some Desktop-app-driven
+        // sessions). Submitting a new prompt proves whatever was pending got resolved.
+        let userPromptHookConfig: [String: Any] = [
+            "matcher": "",
+            "hooks": [
+                [
+                    "type": "command",
+                    "command": stateHookPath,
+                    "async": true
+                ]
+            ]
+        ]
+
+        if var userPromptHooks = hooks["UserPromptSubmit"] as? [[String: Any]] {
+            userPromptHooks.removeAll { hook in
+                guard let hookList = hook["hooks"] as? [[String: Any]] else { return false }
+                return hookList.contains { h in
+                    (h["command"] as? String)?.contains(stateHookFilename) == true
+                }
+            }
+            userPromptHooks.append(userPromptHookConfig)
+            hooks["UserPromptSubmit"] = userPromptHooks
+        } else {
+            hooks["UserPromptSubmit"] = [userPromptHookConfig]
+        }
+
         settings["hooks"] = hooks
         try saveSettings(settings)
     }
@@ -333,6 +373,21 @@ class HookInstaller {
                 hooks.removeValue(forKey: "PreToolUse")
             } else {
                 hooks["PreToolUse"] = preToolUseHooks
+            }
+        }
+
+        // Remove our UserPromptSubmit hook
+        if var userPromptHooks = hooks["UserPromptSubmit"] as? [[String: Any]] {
+            userPromptHooks.removeAll { hook in
+                guard let hookList = hook["hooks"] as? [[String: Any]] else { return false }
+                return hookList.contains { h in
+                    (h["command"] as? String)?.contains(stateHookFilename) == true
+                }
+            }
+            if userPromptHooks.isEmpty {
+                hooks.removeValue(forKey: "UserPromptSubmit")
+            } else {
+                hooks["UserPromptSubmit"] = userPromptHooks
             }
         }
 
