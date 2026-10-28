@@ -136,6 +136,7 @@ struct HotkeyConfig: Codable, Equatable {
 
     static let defaultQuickLaunch = HotkeyConfig(keyCode: 5, modifiers: UInt32(controlKey | optionKey), enabled: true)
     static let defaultWindowSwitcher = HotkeyConfig(keyCode: 35, modifiers: UInt32(controlKey | optionKey), enabled: true)
+    static let defaultSessionSidebar = HotkeyConfig(keyCode: 1, modifiers: UInt32(controlKey | optionKey), enabled: true)
 
     var displayString: String {
         var parts: [String] = []
@@ -184,14 +185,17 @@ class HotkeyManager: ObservableObject {
     var themeManager: ThemeManager?
     private var hotkeyRefG: EventHotKeyRef?
     private var hotkeyRefP: EventHotKeyRef?
+    private var hotkeyRefS: EventHotKeyRef?
     private var eventHandlerInstalled = false
     static var instance: HotkeyManager?
 
     @Published var quickLaunchConfig: HotkeyConfig = .defaultQuickLaunch
     @Published var windowSwitcherConfig: HotkeyConfig = .defaultWindowSwitcher
+    @Published var sessionSidebarConfig: HotkeyConfig = .defaultSessionSidebar
 
     private static let quickLaunchKey = "HotkeyQuickLaunch"
     private static let windowSwitcherKey = "HotkeyWindowSwitcher"
+    private static let sessionSidebarKey = "HotkeySessionSidebar"
 
     func loadFromDefaults() {
         if let data = UserDefaults.standard.data(forKey: Self.quickLaunchKey),
@@ -202,6 +206,10 @@ class HotkeyManager: ObservableObject {
            let config = try? JSONDecoder().decode(HotkeyConfig.self, from: data) {
             windowSwitcherConfig = config
         }
+        if let data = UserDefaults.standard.data(forKey: Self.sessionSidebarKey),
+           let config = try? JSONDecoder().decode(HotkeyConfig.self, from: data) {
+            sessionSidebarConfig = config
+        }
     }
 
     func saveToDefaults() {
@@ -210,6 +218,9 @@ class HotkeyManager: ObservableObject {
         }
         if let data = try? JSONEncoder().encode(windowSwitcherConfig) {
             UserDefaults.standard.set(data, forKey: Self.windowSwitcherKey)
+        }
+        if let data = try? JSONEncoder().encode(sessionSidebarConfig) {
+            UserDefaults.standard.set(data, forKey: Self.sessionSidebarKey)
         }
     }
 
@@ -228,6 +239,8 @@ class HotkeyManager: ObservableObject {
                     HotkeyManager.instance?.handleHotkeyG()
                 } else if hotKeyID.id == 2 {
                     HotkeyManager.instance?.handleHotkeyP()
+                } else if hotKeyID.id == 3 {
+                    HotkeyManager.instance?.handleHotkeyS()
                 }
                 return noErr
             }, 1, &eventType, nil, nil)
@@ -264,6 +277,16 @@ class HotkeyManager: ObservableObject {
                 print("Global hotkey registered: \(windowSwitcherConfig.displayString) (Window Switcher)")
             }
         }
+
+        if sessionSidebarConfig.enabled {
+            var hotKeyIDS = EventHotKeyID()
+            hotKeyIDS.signature = OSType(0x4754504B) // "GTPK"
+            hotKeyIDS.id = 3
+            let status = RegisterEventHotKey(sessionSidebarConfig.keyCode, sessionSidebarConfig.modifiers, hotKeyIDS, GetApplicationEventTarget(), 0, &hotkeyRefS)
+            if status == noErr {
+                print("Global hotkey registered: \(sessionSidebarConfig.displayString) (Session Sidebar)")
+            }
+        }
     }
 
     private func unregisterAll() {
@@ -274,6 +297,10 @@ class HotkeyManager: ObservableObject {
         if let ref = hotkeyRefP {
             UnregisterEventHotKey(ref)
             hotkeyRefP = nil
+        }
+        if let ref = hotkeyRefS {
+            UnregisterEventHotKey(ref)
+            hotkeyRefS = nil
         }
     }
 
@@ -286,6 +313,13 @@ class HotkeyManager: ObservableObject {
     private func handleHotkeyP() {
         DispatchQueue.main.async {
             WindowSwitcherPanel.shared.show()
+        }
+    }
+
+    private func handleHotkeyS() {
+        DispatchQueue.main.async {
+            guard let themeManager = self.themeManager else { return }
+            SessionSidebarPanel.shared.toggle(themeManager: themeManager)
         }
     }
 
@@ -2948,6 +2982,7 @@ struct HotkeysSettingsView: View {
     enum RecordingTarget {
         case quickLaunch
         case windowSwitcher
+        case sessionSidebar
     }
 
     var body: some View {
@@ -2955,7 +2990,7 @@ struct HotkeysSettingsView: View {
             Text("Global Hotkeys")
                 .font(.headline)
 
-            Text("Customize keyboard shortcuts for Quick Launch and Window Switcher.")
+            Text("Customize keyboard shortcuts for Quick Launch, Window Switcher, and Session Sidebar.")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -2975,6 +3010,15 @@ struct HotkeysSettingsView: View {
                         config: $hotkeyManager.windowSwitcherConfig,
                         target: .windowSwitcher,
                         defaultConfig: .defaultWindowSwitcher
+                    )
+
+                    Divider()
+
+                    hotkeyRow(
+                        label: "Session Sidebar",
+                        config: $hotkeyManager.sessionSidebarConfig,
+                        target: .sessionSidebar,
+                        defaultConfig: .defaultSessionSidebar
                     )
                 }
             }
@@ -3004,12 +3048,14 @@ struct HotkeysSettingsView: View {
                 Button("Reset All") {
                     hotkeyManager.quickLaunchConfig = .defaultQuickLaunch
                     hotkeyManager.windowSwitcherConfig = .defaultWindowSwitcher
+                    hotkeyManager.sessionSidebarConfig = .defaultSessionSidebar
                     hotkeyManager.reregisterHotkeys()
                     conflictWarning = nil
                 }
                 .disabled(
                     hotkeyManager.quickLaunchConfig == .defaultQuickLaunch &&
-                    hotkeyManager.windowSwitcherConfig == .defaultWindowSwitcher
+                    hotkeyManager.windowSwitcherConfig == .defaultWindowSwitcher &&
+                    hotkeyManager.sessionSidebarConfig == .defaultSessionSidebar
                 )
             }
         }
@@ -3094,6 +3140,8 @@ struct HotkeysSettingsView: View {
                 hotkeyManager.quickLaunchConfig = newConfig
             case .windowSwitcher:
                 hotkeyManager.windowSwitcherConfig = newConfig
+            case .sessionSidebar:
+                hotkeyManager.sessionSidebarConfig = newConfig
             }
 
             stopRecording()
@@ -3112,12 +3160,22 @@ struct HotkeysSettingsView: View {
     }
 
     private func checkConflicts() {
-        let q = hotkeyManager.quickLaunchConfig
-        let w = hotkeyManager.windowSwitcherConfig
-        if q.enabled && w.enabled && q.keyCode == w.keyCode && q.modifiers == w.modifiers {
-            conflictWarning = "Both hotkeys are set to the same shortcut (\(q.displayString)). Only Quick Launch will be registered."
-        } else {
-            conflictWarning = nil
+        // Listed in registration order: on a clash, the earlier one wins
+        let hotkeys: [(name: String, config: HotkeyConfig)] = [
+            ("Quick Launch", hotkeyManager.quickLaunchConfig),
+            ("Window Switcher", hotkeyManager.windowSwitcherConfig),
+            ("Session Sidebar", hotkeyManager.sessionSidebarConfig),
+        ]
+        conflictWarning = nil
+        for i in hotkeys.indices {
+            for j in hotkeys.indices where j > i {
+                let a = hotkeys[i], b = hotkeys[j]
+                if a.config.enabled && b.config.enabled &&
+                    a.config.keyCode == b.config.keyCode && a.config.modifiers == b.config.modifiers {
+                    conflictWarning = "\(a.name) and \(b.name) are set to the same shortcut (\(a.config.displayString)). Only \(a.name) will be registered."
+                    return
+                }
+            }
         }
     }
 }
