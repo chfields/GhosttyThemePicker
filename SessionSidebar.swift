@@ -280,7 +280,7 @@ struct SessionSidebarView: View {
                     ForEach(SessionGroup.allCases, id: \.self) { group in
                         let items = sessions
                             .filter { SessionGroup.of($0.claudeState) == group }
-                            .sorted { $0.claudeState > $1.claudeState }
+                            .sorted(by: sessionOrder)
                         if !items.isEmpty {
                             Text(group.title)
                                 .font(.caption2.weight(.semibold))
@@ -350,6 +350,20 @@ struct SessionSidebarView: View {
 
     private func key(for window: GhosttyWindow) -> String {
         "\(window.pid)-\(window.axIndex)"
+    }
+
+    /// Higher-priority state first (asking > waiting, working > running); within a state,
+    /// the session that has been in it longest first; name breaks ties so rows don't jump
+    private func sessionOrder(_ a: GhosttyWindow, _ b: GhosttyWindow) -> Bool {
+        if a.claudeState != b.claudeState {
+            return a.claudeState > b.claudeState
+        }
+        let sinceA = stateSince[key(for: a)]?.since ?? .distantFuture
+        let sinceB = stateSince[key(for: b)]?.since ?? .distantFuture
+        if sinceA != sinceB {
+            return sinceA < sinceB
+        }
+        return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
     }
 
     private func highlight(for window: GhosttyWindow) -> SessionRow.Highlight {
