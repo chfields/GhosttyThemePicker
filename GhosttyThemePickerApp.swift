@@ -2347,6 +2347,7 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @ObservedObject var themeManager: ThemeManager
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @AppStorage(SidebarAppearance.defaultsKey) private var sidebarAppearance = SidebarAppearance.system.rawValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2394,6 +2395,28 @@ struct GeneralSettingsView: View {
             }
             .onChange(of: themeManager.defaultRandomDirectory) { _ in
                 themeManager.saveDefaultRandomDirectory()
+            }
+
+            Divider()
+
+            // Session Sidebar Appearance
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Session Sidebar Appearance")
+                    .font(.headline)
+                Picker("", selection: $sidebarAppearance) {
+                    ForEach(SidebarAppearance.allCases) { mode in
+                        Text(mode.label).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 240)
+                Text("System follows the macOS light/dark setting")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .onChange(of: sidebarAppearance) { _ in
+                SessionSidebarPanel.shared.applyAppearance()
             }
 
             Spacer()

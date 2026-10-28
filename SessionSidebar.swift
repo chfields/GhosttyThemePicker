@@ -4,6 +4,35 @@ import ApplicationServices
 
 // MARK: - Session Sidebar Panel
 
+/// Light/dark override for the sidebar, independent of the system appearance
+enum SidebarAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    static let defaultsKey = "sessionSidebarAppearance"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+
+    static var current: SidebarAppearance {
+        UserDefaults.standard.string(forKey: defaultsKey).flatMap(SidebarAppearance.init) ?? .system
+    }
+}
+
 /// Always-visible panel docked to the left screen edge listing Ghostty sessions by status.
 /// Spike: reads from WindowTracker.shared (already refreshing every second) — no extra polling.
 class SessionSidebarPanel: ObservableObject {
@@ -110,6 +139,11 @@ class SessionSidebarPanel: ObservableObject {
         UserDefaults.standard.set(false, forKey: visibleKey)
     }
 
+    /// Re-read the saved appearance; nil follows the system
+    func applyAppearance() {
+        panel?.appearance = SidebarAppearance.current.nsAppearance
+    }
+
     private func makePanel(themeManager: ThemeManager) -> NSPanel {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
@@ -129,6 +163,7 @@ class SessionSidebarPanel: ObservableObject {
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.isReleasedWhenClosed = false
+        panel.appearance = SidebarAppearance.current.nsAppearance
 
         let view = SessionSidebarView(tracker: WindowTracker.shared, themeManager: themeManager) { [weak self] in
             self?.hide()
