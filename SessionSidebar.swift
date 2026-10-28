@@ -10,6 +10,9 @@ class SessionSidebarPanel: ObservableObject {
     static let shared = SessionSidebarPanel()
 
     @Published private(set) var isVisible = false
+    /// "pid-axIndex" of the most recently focused Ghostty window (kept while another app is frontmost)
+    @Published private(set) var activeWindowKey: String?
+    @Published private(set) var ghosttyIsFrontmost = false
 
     private var panel: NSPanel?
     private let width: CGFloat = 280
@@ -25,6 +28,33 @@ class SessionSidebarPanel: ObservableObject {
         ) { [weak self] note in
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             self?.updateLevel(frontmost: app)
+            self?.refreshActiveWindow()
+        }
+    }
+
+    /// Work out which Ghostty window has focus by comparing AX elements, not titles
+    /// (Claude's spinner changes the title every frame)
+    func refreshActiveWindow() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.bundleIdentifier == "com.mitchellh.ghostty" else {
+            ghosttyIsFrontmost = false
+            return
+        }
+        ghosttyIsFrontmost = true
+
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var focusedRef: CFTypeRef?
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedRef) == .success,
+              AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let focused = focusedRef,
+              let windows = windowsRef as? [AXUIElement],
+              let index = windows.firstIndex(where: { CFEqual($0, focused) }) else {
+            return
+        }
+        let key = "\(app.processIdentifier)-\(index + 1)"
+        if key != activeWindowKey {
+            activeWindowKey = key
         }
     }
 
@@ -214,6 +244,7 @@ private enum SessionGroup: Int, CaseIterable {
 struct SessionSidebarView: View {
     @ObservedObject var tracker: WindowTracker
     @ObservedObject var themeManager: ThemeManager
+    @ObservedObject private var sidebar = SessionSidebarPanel.shared
     var onClose: () -> Void
 
     @State private var filter = ""
@@ -260,8 +291,9 @@ struct SessionSidebarView: View {
                             ForEach(items, id: \.id) { window in
                                 SessionRow(
                                     window: window,
-                                    themeColor: themeColor(for: window),
-                                    since: stateSince[key(for: window)]?.since
+                                    themeColors: themeColors(for: window),
+                                    since: stateSince[key(for: window)]?.since,
+                                    highlight: highlight(for: window)
                                 ) {
                                     SessionSidebarPanel.shared.focusAndDock(window)
                                 }
@@ -292,7 +324,10 @@ struct SessionSidebarView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.regularMaterial)
-        .onReceive(tracker.$ghosttyWindows) { updateStateTimes($0) }
+        .onReceive(tracker.$ghosttyWindows) {
+            updateStateTimes($0)
+            sidebar.refreshActiveWindow()
+        }
         .onAppear { missingPermissions = SidebarPermission.missing() }
         .onReceive(permissionTimer) { _ in missingPermissions = SidebarPermission.missing() }
     }
@@ -317,9 +352,14 @@ struct SessionSidebarView: View {
         "\(window.pid)-\(window.axIndex)"
     }
 
-    private func themeColor(for window: GhosttyWindow) -> Color {
-        guard let theme = themeManager.themeForPID(window.pid) else { return .gray.opacity(0.4) }
-        return themeManager.getThemeColors(theme).background
+    private func highlight(for window: GhosttyWindow) -> SessionRow.Highlight {
+        guard key(for: window) == sidebar.activeWindowKey else { return .none }
+        return sidebar.ghosttyIsFrontmost ? .focused : .lastFocused
+    }
+
+    private func themeColors(for window: GhosttyWindow) -> ThemeColors? {
+        guard let theme = themeManager.themeForPID(window.pid) else { return nil }
+        return themeManager.getThemeColors(theme)
     }
 
     private func updateStateTimes(_ windows: [GhosttyWindow]) {
@@ -418,19 +458,30 @@ private struct PermissionWarningRow: View {
 
 private struct SessionRow: View {
     let window: GhosttyWindow
-    let themeColor: Color
+    let themeColors: ThemeColors?  // nil = theme unknown
     let since: Date?
+    let highlight: Highlight
     let onFocus: () -> Void
+
+    enum Highlight {
+        case none
+        case focused      // this window has focus and Ghostty is frontmost
+        case lastFocused  // last focused Ghostty window while another app is frontmost
+    }
 
     @State private var hovering = false
 
     var body: some View {
         Button(action: onFocus) {
             HStack(spacing: 8) {
+                // Mini terminal: theme background outlined in the theme's text color
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(themeColor)
-                    .frame(width: 4)
-                    .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.gray.opacity(0.3), lineWidth: 0.5))
+                    .fill(themeColors?.background ?? Color.gray.opacity(0.4))
+                    .frame(width: 6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 2)
+                            .stroke(themeColors?.foreground ?? Color.gray.opacity(0.3), lineWidth: 1.5)
+                    )
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
@@ -452,12 +503,24 @@ private struct SessionRow: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(hovering ? Color.accentColor.opacity(0.2) : Color.clear)
+                    .fill(backgroundColor)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(highlight == .focused ? Color.accentColor : Color.clear, lineWidth: 2.5)
             )
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 4)
         .onHover { hovering = $0 }
+    }
+
+    private var backgroundColor: Color {
+        switch highlight {
+        case .focused: return Color.accentColor.opacity(0.25)
+        case .lastFocused: return Color.accentColor.opacity(0.12)
+        case .none: return hovering ? Color.primary.opacity(0.08) : Color.clear
+        }
     }
 
     private var statusBadge: some View {

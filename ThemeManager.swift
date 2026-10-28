@@ -451,7 +451,39 @@ class ThemeManager: ObservableObject {
             return ws.theme
         }
         // Check if launched via direct theme selection (random, favorites, recent)
-        return launchedThemes[pid]
+        if let theme = launchedThemes[pid] {
+            return theme
+        }
+        // Fall back to the process's own --theme= argument (covers windows launched
+        // before this app instance started, since the caches above are in-memory only)
+        if let cached = argumentThemeCache[pid] {
+            return cached
+        }
+        let theme = Self.themeArgument(forPID: pid)
+        argumentThemeCache[pid] = theme
+        return theme
+    }
+
+    // PID -> theme parsed from process arguments (nil = checked, no --theme= arg)
+    private var argumentThemeCache: [pid_t: String?] = [:]
+
+    /// Read a process's argv via sysctl and return the value of its --theme= argument
+    private static func themeArgument(forPID pid: pid_t) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+
+        // Layout: argc (Int32), executable path, NUL padding, then argc NUL-terminated args
+        let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+        let strings = buffer[MemoryLayout<Int32>.size..<size]
+            .split(separator: 0, omittingEmptySubsequences: true)
+            .map { String(decoding: $0, as: UTF8.self) }
+        let args = strings.dropFirst().prefix(Int(argc))  // drop executable path
+
+        let prefix = "--theme="
+        return args.first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
     }
 
     private func loadWorkstreams() {
