@@ -101,9 +101,7 @@ class SessionSidebarPanel: ObservableObject {
 
         // Docking needs Accessibility; prompt for this exact binary if it isn't trusted
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(options) {
-            debugLog("Sidebar: Accessibility not trusted, prompted user")
-        }
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 
     func hide() {
@@ -152,11 +150,8 @@ class SessionSidebarPanel: ObservableObject {
         let element = WindowTracker.shared.axWindow(axIndex: window.axIndex, pid: window.pid)
         WindowTracker.shared.focusWindow(axIndex: window.axIndex, pid: window.pid)
 
-        guard let element = element else {
-            debugLog("Sidebar dock: no AX window for pid \(window.pid) index \(window.axIndex)")
-            return
-        }
-        guard let panel = panel, let screen = panel.screen ?? NSScreen.main else { return }
+        guard let element = element,
+              let panel = panel, let screen = panel.screen ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
         let target = NSRect(
             x: panel.frame.maxX,
@@ -172,12 +167,9 @@ extension WindowTracker {
     func axWindow(axIndex: Int, pid: pid_t) -> AXUIElement? {
         let appElement = AXUIElementCreateApplication(pid)
         var windowsRef: CFTypeRef?
-        let error = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        guard error == .success,
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
               let windows = windowsRef as? [AXUIElement],
               axIndex > 0 && axIndex <= windows.count else {
-            let count = (windowsRef as? [AXUIElement])?.count ?? -1
-            debugLog("Sidebar dock: AX lookup failed pid=\(pid) index=\(axIndex) error=\(error.rawValue) axWindows=\(count) trusted=\(AXIsProcessTrusted())")
             return nil
         }
         return windows[axIndex - 1]
@@ -192,29 +184,15 @@ extension WindowTracker {
 
         // Position first so the resize isn't clamped by the old location, then size, then position again
         // in case the window refused part of the size change (e.g. cell-size snapping)
-        var results: [AXError] = []
         if let position = AXValueCreate(.cgPoint, &origin) {
-            results.append(AXUIElementSetAttributeValue(windowElement, kAXPositionAttribute as CFString, position))
+            AXUIElementSetAttributeValue(windowElement, kAXPositionAttribute as CFString, position)
         }
         if let sizeValue = AXValueCreate(.cgSize, &size) {
-            results.append(AXUIElementSetAttributeValue(windowElement, kAXSizeAttribute as CFString, sizeValue))
+            AXUIElementSetAttributeValue(windowElement, kAXSizeAttribute as CFString, sizeValue)
         }
         if let position = AXValueCreate(.cgPoint, &origin) {
-            results.append(AXUIElementSetAttributeValue(windowElement, kAXPositionAttribute as CFString, position))
+            AXUIElementSetAttributeValue(windowElement, kAXPositionAttribute as CFString, position)
         }
-        debugLog("Sidebar dock: target origin=\(origin) size=\(size) results=\(results.map { $0.rawValue }) now=\(currentFrame(of: windowElement))")
-    }
-
-    private func currentFrame(of element: AXUIElement) -> String {
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef)
-        AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef)
-        var pos = CGPoint.zero
-        var size = CGSize.zero
-        if let posRef = posRef { AXValueGetValue(posRef as! AXValue, .cgPoint, &pos) }
-        if let sizeRef = sizeRef { AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) }
-        return "origin=\(pos) size=\(size)"
     }
 }
 
