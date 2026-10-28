@@ -99,6 +99,8 @@ struct GhosttyThemePickerApp: App {
                     // Connect WindowTracker to themeManager for workstream lookups
                     WindowTracker.shared.themeManager = themeManager
 
+                    SessionSidebarPanel.shared.restoreIfNeeded(themeManager: themeManager)
+
                     // Launch auto-start workstreams on first appearance
                     if !hasLaunchedAutoStart {
                         hasLaunchedAutoStart = true
@@ -2069,6 +2071,7 @@ struct ThemeSwatchView: View {
 struct MenuContent: View {
     @ObservedObject var themeManager: ThemeManager
     @Binding var showingWorkstreams: Bool
+    @ObservedObject private var sidebar = SessionSidebarPanel.shared
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -2135,6 +2138,16 @@ struct MenuContent: View {
             }
         }
         .keyboardShortcut("s", modifiers: [.command, .shift])
+
+        // Session Sidebar (spike)
+        Button {
+            sidebar.toggle(themeManager: themeManager)
+        } label: {
+            HStack {
+                Image(systemName: "sidebar.left")
+                Text(sidebar.isVisible ? "Hide Session Sidebar" : "Show Session Sidebar")
+            }
+        }
 
         Divider()
 
