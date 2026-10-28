@@ -451,7 +451,28 @@ class ThemeManager: ObservableObject {
             return ws.theme
         }
         // Check if launched via direct theme selection (random, favorites, recent)
-        return launchedThemes[pid]
+        if let theme = launchedThemes[pid] {
+            return theme
+        }
+        // Fall back to the process's own --theme= argument (covers windows launched
+        // before this app instance started, since the caches above are in-memory only)
+        if let cached = argumentThemeCache[pid] {
+            return cached
+        }
+        let theme = Self.themeArgument(forPID: pid)
+        argumentThemeCache[pid] = theme
+        return theme
+    }
+
+    // PID -> theme parsed from process arguments (nil = checked, no --theme= arg)
+    private var argumentThemeCache: [pid_t: String?] = [:]
+
+    /// Value of the process's --theme= argument
+    private static func themeArgument(forPID pid: pid_t) -> String? {
+        let prefix = "--theme="
+        return processArguments(pid: pid)?
+            .first { $0.hasPrefix(prefix) }
+            .map { String($0.dropFirst(prefix.count)) }
     }
 
     private func loadWorkstreams() {
