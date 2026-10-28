@@ -575,6 +575,7 @@ struct GhosttyWindow: Identifiable {
     var shellCwd: String?         // Current working directory of shell
     var hasClaudeProcess: Bool = false  // Whether a Claude process is running in this window
     var hookState: String?        // State from Claude Code hook ("asking" or "waiting")
+    var claudeShellCommand: ClaudeShellCommand?  // Command Claude's Bash tool is running, if any
 
     /// Determine Claude's state based on window title, hook state, and process detection
     var claudeState: ClaudeState {

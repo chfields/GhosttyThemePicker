@@ -484,6 +484,7 @@ private struct SessionRow: View {
     }
 
     @State private var hovering = false
+    @State private var hoveringShell = false
 
     var body: some View {
         Button(action: onFocus) {
@@ -510,6 +511,9 @@ private struct SessionRow: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                    if let shell = window.claudeShellCommand {
+                        shellLine(shell)
+                    }
                 }
             }
             .padding(.vertical, 6)
@@ -568,10 +572,74 @@ private struct SessionRow: View {
         return parts.joined(separator: " · ")
     }
 
+    /// Command Claude's Bash tool is still running, e.g. "▶ kubectl · 9m".
+    /// Hovering expands it in place to list every shell (a .help tooltip won't show,
+    /// because the non-activating panel's app is almost never active).
+    private func shellLine(_ shell: ClaudeShellCommand) -> some View {
+        var text = "\(shell.label) · \(Self.elapsed(since: shell.started))"
+        if shell.otherCount > 0 {
+            text += " +\(shell.otherCount)"
+        }
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 8))
+                Text(text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.caption.monospaced())
+            .foregroundColor(.green)
+
+            if hoveringShell {
+                shellDetail(shell)
+            }
+        }
+        // Hover covers the line and the detail, so moving into the detail keeps it open
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { hoveringShell = hovering }
+        }
+    }
+
+    /// Every running shell: label, age, and (shortened) command Claude ran
+    private func shellDetail(_ shell: ClaudeShellCommand) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(shell.shells.enumerated()), id: \.offset) { _, item in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("▶ \(item.label) · \(Self.elapsed(since: item.started))")
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundColor(.green)
+                    if let script = item.script {
+                        Text(Self.oneLine(script))
+                            .font(.caption2.monospaced())
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                    }
+                }
+            }
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(Color.primary.opacity(0.06))
+        )
+        .transition(.opacity)
+    }
+
+    private static func oneLine(_ script: String) -> String {
+        script
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
     private static func elapsed(since date: Date) -> String {
         let seconds = Int(Date().timeIntervalSince(date))
         if seconds < 60 { return "now" }
         if seconds < 3600 { return "\(seconds / 60)m" }
-        return "\(seconds / 3600)h"
+        if seconds < 86400 { return "\(seconds / 3600)h" }
+        return "\(seconds / 86400)d"
     }
 }
