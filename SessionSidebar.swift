@@ -241,21 +241,25 @@ extension WindowTracker {
 
 /// Sidebar grouping: status matters more than the exact Claude state
 private enum SessionGroup: Int, CaseIterable {
-    case needsYou, running, idle
+    case needsYou, ready, running, terminals
 
     var title: String {
         switch self {
         case .needsYou: return "NEEDS YOU"
+        case .ready: return "READY"
         case .running: return "RUNNING"
-        case .idle: return "IDLE"
+        case .terminals: return "TERMINALS"
         }
     }
 
+    /// Needs You is only for something blocking Claude (a question or permission prompt);
+    /// a finished session waiting for the next prompt is Ready, so real questions don't get buried
     static func of(_ state: ClaudeState) -> SessionGroup {
         switch state {
-        case .asking, .waiting: return .needsYou
+        case .asking: return .needsYou
+        case .waiting: return .ready
         case .working, .running: return .running
-        case .notRunning: return .idle
+        case .notRunning: return .terminals
         }
     }
 }
@@ -607,7 +611,7 @@ private struct SessionRow: View {
         let isPermission = askingPrompt?.kind == .permission
         return HStack(spacing: 3) {
             Image(systemName: isPermission ? "lock.circle" : state.icon)
-            Text(isPermission ? "Allow?" : state == .notRunning ? "Idle" : state.label)
+            Text(isPermission ? "Allow?" : state == .notRunning ? "Shell" : state.label)
         }
         .font(.caption.weight(.semibold))
         .foregroundColor(statusColor(state))
