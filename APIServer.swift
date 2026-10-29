@@ -13,6 +13,12 @@ struct WindowResponse: Codable {
     let workstreamName: String?
     let hasClaudeProcess: Bool
     let preview: PreviewResponse?  // what Claude is asking, or a recap once it's finished
+    let activity: ActivityResponse?  // what Claude is saying and doing while it works
+}
+
+struct ActivityResponse: Codable {
+    let message: String?
+    let action: String?
 }
 
 struct PreviewResponse: Codable {
@@ -269,7 +275,8 @@ class APIServer {
                 displayName: window.displayName,
                 workstreamName: window.workstreamName,
                 hasClaudeProcess: window.hasClaudeProcess,
-                preview: window.hookPrompt.map { PreviewResponse(kind: $0.kind.rawValue, text: $0.text) }
+                preview: window.hookPrompt.map { PreviewResponse(kind: $0.kind.rawValue, text: $0.text) },
+                activity: window.activity.map { ActivityResponse(message: $0.message, action: $0.action) }
             )
         }
 

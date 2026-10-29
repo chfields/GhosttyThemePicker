@@ -187,7 +187,7 @@ class WindowTracker: ObservableObject {
     private var workstreamCache: [pid_t: String?] = [:]
     private var hookStateCache: [String: HookStateEntry] = [:]  // cwd -> hook state (older hooks without a Claude pid)
     private var hookStateByClaudePid: [pid_t: HookStateEntry] = [:]  // Claude process -> hook state
-    private var recapCache: [String: (modified: Date, summary: (text: String, date: Date)?)] = [:]  // transcript -> newest recap
+    private var transcriptCache: [String: (modified: Date, activity: TranscriptActivity)] = [:]  // transcript -> what its tail says
     private var lastWorkingSeen: [String: TimeInterval] = [:]  // "pid-axIndex" -> last time the title showed a spinner
     private var claudeShellCache: [pid_t: (isClaudeShell: Bool, started: Date?, script: String?)] = [:]  // child of claude -> classification
 
@@ -243,7 +243,7 @@ class WindowTracker: ObservableObject {
         claudeShellCache = claudeShellCache.filter { cachedProcessTree[$0.key] != nil }
         hookStateByClaudePid = hookStateByClaudePid.filter { cachedClaudePids.contains($0.key) }
         let liveTranscripts = Set(hookStateByClaudePid.values.compactMap(\.transcriptPath))
-        recapCache = recapCache.filter { liveTranscripts.contains($0.key) }
+        transcriptCache = transcriptCache.filter { liveTranscripts.contains($0.key) }
         let activeKeys = Set(windows.map { "\($0.pid)-\($0.axIndex)" })
         lastWorkingSeen = lastWorkingSeen.filter { activeKeys.contains($0.key) }
 
@@ -439,10 +439,16 @@ class WindowTracker: ObservableObject {
             // no hook fires for either) beats the raw last reply when it's newer than the last hook
             // state. It still applies when that state was discarded because the window showed work
             // afterwards, which /recap itself does.
-            if windows[i].hookState != "asking", let entry = newestEntry, let path = entry.transcriptPath,
-               let summary = latestRecap(transcriptPath: path),
+            let transcript = newestEntry?.transcriptPath.flatMap { transcriptActivity(path: $0) }
+            if windows[i].hookState != "asking", let entry = newestEntry,
+               let summary = transcript?.recap,
                summary.date.timeIntervalSince1970 >= entry.timestamp {
                 windows[i].hookPrompt = HookPrompt(kind: .summary, text: summary.text)
+            }
+
+            // While Claude works: its latest message and tool call in this turn
+            if windows[i].claudeState == .working || windows[i].claudeState == .running {
+                windows[i].activity = transcript?.activity
             }
         }
     }
@@ -516,17 +522,23 @@ class WindowTracker: ObservableObject {
         return entry.claudePid != nil || lastWorking != nil || now - entry.timestamp <= hookStateStaleness
     }
 
-    /// Newest recap in a transcript: an "away_summary" (shown when you come back to an idle
-    /// session) or the output of /recap. Only the file's tail is read, and only again once it changes.
-    private func latestRecap(transcriptPath path: String) -> (text: String, date: Date)? {
+    /// What a transcript's tail says: the newest recap (an "away_summary", shown when you come
+    /// back to an idle session, or /recap output) and Claude's latest message and tool call in the
+    /// current turn. Only the tail is read, and only again once the file changes.
+    private struct TranscriptActivity {
+        var recap: (text: String, date: Date)?
+        var activity = ClaudeActivity()
+    }
+
+    private func transcriptActivity(path: String) -> TranscriptActivity? {
         guard let modified = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else {
             return nil
         }
-        if let cached = recapCache[path], cached.modified == modified {
-            return cached.summary
+        if let cached = transcriptCache[path], cached.modified == modified {
+            return cached.activity
         }
 
-        var summary: (text: String, date: Date)?
+        var result = TranscriptActivity()
         if let handle = FileHandle(forReadingAtPath: path) {
             defer { try? handle.close() }
             let size = (try? handle.seekToEnd()) ?? 0
@@ -535,9 +547,36 @@ class WindowTracker: ObservableObject {
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            var inCurrentTurn = true
             for index in lines.indices.reversed() {
                 let line = lines[index]
+                if !inCurrentTurn && result.recap != nil { break }
+
+                // Claude's own text and tool calls, newest first, until the prompt that started the turn
+                if inCurrentTurn, line.contains("\"type\":\"assistant\""),
+                   let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                   let blocks = (json["message"] as? [String: Any])?["content"] as? [[String: Any]] {
+                    for block in blocks.reversed() {
+                        if result.activity.message == nil, block["type"] as? String == "text",
+                           let text = (block["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                           !text.isEmpty {
+                            result.activity.message = text
+                        } else if result.activity.action == nil, block["type"] as? String == "tool_use",
+                                  let name = block["name"] as? String {
+                            result.activity.action = Self.describeToolCall(name: name, input: block["input"] as? [String: Any] ?? [:])
+                        }
+                    }
+                    continue
+                }
+                // A typed prompt (string content, unlike tool results) starts the turn
+                if inCurrentTurn, line.contains("\"type\":\"user\""),
+                   let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                   (json["message"] as? [String: Any])?["content"] is String {
+                    inCurrentTurn = false
+                }
+
                 // /recap output is a local_command entry right after the "/recap" command entry
+                guard result.recap == nil else { continue }
                 let isAwaySummary = line.contains("\"away_summary\"")
                 let isRecapCommand = line.contains("\"local_command\"") && index > lines.startIndex &&
                     lines[index - 1].contains("<command-name>/recap</command-name>")
@@ -551,13 +590,34 @@ class WindowTracker: ObservableObject {
                     .replacingOccurrences(of: "<local-command-stdout>", with: "")
                     .replacingOccurrences(of: "</local-command-stdout>", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                summary = (text, date)
-                break
+                if !text.isEmpty {
+                    result.recap = (text, date)
+                }
             }
         }
-        recapCache[path] = (modified, summary)
-        return summary
+        transcriptCache[path] = (modified, result)
+        return result
+    }
+
+    /// Short label for a tool call: "Edit · WindowTracker.swift", "Bash · Build the app"
+    static func describeToolCall(name: String, input: [String: Any]) -> String {
+        func string(_ key: String) -> String? {
+            guard let value = (input[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
+        }
+        var detail: String?
+        if let path = string("file_path") ?? string("notebook_path") {
+            detail = (path as NSString).lastPathComponent
+        } else if let url = string("url") {
+            detail = URL(string: url)?.host ?? url
+        } else if let command = string("command") {
+            detail = string("description") ?? command.components(separatedBy: "\n").first
+        } else {
+            detail = string("description") ?? string("pattern") ?? string("query") ?? string("prompt")
+        }
+        guard let detail = detail else { return name }
+        return "\(name) · \(detail.prefix(120))"
     }
 
     /// Newest state from a Claude process running in this Ghostty process
