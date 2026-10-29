@@ -296,6 +296,19 @@ struct SessionSidebarView: View {
 
             TextField("Filter…", text: $filter)
                 .textFieldStyle(.roundedBorder)
+                .overlay(alignment: .trailing) {
+                    if !filter.isEmpty {
+                        Button {
+                            filter = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 5)
+                        .help("Clear filter")
+                    }
+                }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
 
