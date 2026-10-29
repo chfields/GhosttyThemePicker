@@ -308,11 +308,18 @@ struct SessionSidebarView: View {
                             .filter { SessionGroup.of($0.claudeState) == group }
                             .sorted(by: sessionOrder)
                         if !items.isEmpty {
-                            Text(group.title)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 12)
-                                .padding(.top, 10)
+                            // Count on the right, in line with the status badges; Needs You in orange
+                            HStack {
+                                Text(group.title)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text("\(items.count)")
+                                    .monospacedDigit()
+                                    .foregroundColor(group == .needsYou ? .orange : .secondary)
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.top, 10)
 
                             ForEach(items, id: \.id) { window in
                                 SessionRow(
