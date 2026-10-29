@@ -571,6 +571,7 @@ struct HookStateEntry {
     let state: String
     let timestamp: TimeInterval
     let prompt: HookPrompt?
+    let claudePid: pid_t?  // Claude process that wrote it; nil for older hooks (directory only)
 }
 
 /// What Claude is asking (or, once finished, a recap of its reply), recorded by the hooks

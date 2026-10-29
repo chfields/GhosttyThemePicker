@@ -185,7 +185,8 @@ class WindowTracker: ObservableObject {
     private var cachedClaudePids: Set<pid_t> = []
     private var cachedShellCwds: [pid_t: String] = [:]
     private var workstreamCache: [pid_t: String?] = [:]
-    private var hookStateCache: [String: HookStateEntry] = [:]  // cwd -> hook state
+    private var hookStateCache: [String: HookStateEntry] = [:]  // cwd -> hook state (older hooks without a Claude pid)
+    private var hookStateByClaudePid: [pid_t: HookStateEntry] = [:]  // Claude process -> hook state
     private var lastWorkingSeen: [String: TimeInterval] = [:]  // "pid-axIndex" -> last time the title showed a spinner
     private var claudeShellCache: [pid_t: (isClaudeShell: Bool, started: Date?, script: String?)] = [:]  // child of claude -> classification
 
@@ -239,6 +240,7 @@ class WindowTracker: ObservableObject {
         let activePids = Set(windows.map { $0.pid })
         workstreamCache = workstreamCache.filter { activePids.contains($0.key) }
         claudeShellCache = claudeShellCache.filter { cachedProcessTree[$0.key] != nil }
+        hookStateByClaudePid = hookStateByClaudePid.filter { cachedClaudePids.contains($0.key) }
         let activeKeys = Set(windows.map { "\($0.pid)-\($0.axIndex)" })
         lastWorkingSeen = lastWorkingSeen.filter { activeKeys.contains($0.key) }
 
@@ -420,9 +422,13 @@ class WindowTracker: ObservableObject {
                 lastWorkingSeen[windowKey] = Date().timeIntervalSince1970
             }
 
-            if let cwd = cwdToCheck, let entry = getHookState(forCwd: cwd, windowKey: windowKey) {
+            // Prefer the state written by this window's own Claude process; windows sharing a
+            // directory would otherwise all show whichever session wrote last
+            if let entry = getHookState(forGhosttyPid: pid, windowKey: windowKey) {
                 windows[i].hookState = entry.state
                 windows[i].hookPrompt = entry.prompt
+            } else if let cwd = cwdToCheck, let entry = getHookState(forCwd: cwd, windowKey: windowKey) {
+                windows[i].hookState = entry.state
             }
         }
     }
@@ -451,8 +457,16 @@ class WindowTracker: ObservableObject {
             let entry = HookStateEntry(
                 state: state,
                 timestamp: timestamp,
-                prompt: (json["prompt"] as? [String: Any]).flatMap(HookPrompt.init(json:))
+                prompt: (json["prompt"] as? [String: Any]).flatMap(HookPrompt.init(json:)),
+                claudePid: (json["claude_pid"] as? Int).map { pid_t($0) }
             )
+
+            if let claudePid = entry.claudePid {
+                if timestamp > hookStateByClaudePid[claudePid]?.timestamp ?? 0 {
+                    hookStateByClaudePid[claudePid] = entry
+                }
+                continue
+            }
 
             // Only update cache if this is newer than what we have
             // This keeps "asking" state until a newer state replaces it
@@ -481,6 +495,17 @@ class WindowTracker: ObservableObject {
         // Hook timestamps are whole seconds; compare at the same resolution
         guard let lastWorking = lastWorkingSeen[windowKey] else { return false }
         return lastWorking.rounded(.down) <= entry.timestamp
+    }
+
+    /// Newest valid state from a Claude process running in this Ghostty process
+    /// (tabs share a process, so more than one can match)
+    private func getHookState(forGhosttyPid ghosttyPid: pid_t, windowKey: String) -> HookStateEntry? {
+        let now = Date().timeIntervalSince1970
+        return hookStateByClaudePid
+            .filter { traceToGhostty(from: $0.key) == ghosttyPid }
+            .map(\.value)
+            .filter { isHookStateValid($0, windowKey: windowKey, now: now) }
+            .max { $0.timestamp < $1.timestamp }
     }
 
     private func getHookState(forCwd cwd: String, windowKey: String) -> HookStateEntry? {

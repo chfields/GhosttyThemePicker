@@ -16,6 +16,18 @@ EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
 STATE_DIR="$HOME/.claude-states"
 mkdir -p "$STATE_DIR"
 
+# The Claude process this hook runs under: the app maps it to its Ghostty window, so sessions
+# sharing a directory don't share a state
+CLAUDE_PID=""
+p=$PPID
+while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+    if [ "$(basename "$(ps -o comm= -p "$p")")" = "claude" ]; then
+        CLAUDE_PID=$p
+        break
+    fi
+    p=$(ps -o ppid= -p "$p" | tr -d ' ')
+done
+
 # Default state
 STATE="waiting"
 PROMPT="null"
@@ -73,10 +85,15 @@ if [ "$EVENT" != "UserPromptSubmit" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRA
     fi
 fi
 
-# Write state file with session info
-# Use CWD to derive a unique identifier for the terminal/project
-CWD_HASH=$(echo "$CWD" | md5 | cut -c1-8)
-STATE_FILE="$STATE_DIR/state-$CWD_HASH.json"
+# One state file per Claude process (or per directory if it can't be found)
+if [ -n "$CLAUDE_PID" ]; then
+    STATE_FILE="$STATE_DIR/state-pid-$CLAUDE_PID.json"
+    # Per-process files pile up as sessions end; drop ones untouched for 2 days
+    find "$STATE_DIR" -name 'state-pid-*.json' -mtime +2 -delete 2>/dev/null
+else
+    CWD_HASH=$(echo "$CWD" | md5 | cut -c1-8)
+    STATE_FILE="$STATE_DIR/state-$CWD_HASH.json"
+fi
 
 # Write atomically so the app never reads a half-written file
 jq -n \
@@ -85,7 +102,8 @@ jq -n \
     --arg cwd "$CWD" \
     --argjson timestamp "$(date +%s)" \
     --argjson prompt "$PROMPT" \
-    '{state: $state, session_id: $session, cwd: $cwd, timestamp: $timestamp, prompt: $prompt}' \
+    --argjson claude_pid "${CLAUDE_PID:-null}" \
+    '{state: $state, session_id: $session, cwd: $cwd, timestamp: $timestamp, prompt: $prompt, claude_pid: $claude_pid}' \
     > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
 
 # Exit successfully (don't block Claude from stopping)
