@@ -541,6 +541,7 @@ private struct SessionRow: View {
     @State private var hovering = false
     @State private var hoveringShell = false
     @State private var hoveringPrompt = false
+    @State private var promptWidth: CGFloat = 220
 
     var body: some View {
         Button(action: onFocus) {
@@ -679,13 +680,26 @@ private struct SessionRow: View {
     /// The question, permission request or recap, 2 lines (options on one line) until hovered,
     /// then expanded in place like the shell line
     private func promptPreview(_ prompt: HookPrompt) -> some View {
-        let text = String(Self.oneLine(prompt.text).prefix(500))
+        // A recap keeps its line breaks and shows its end (the outcome / next step); SwiftUI's
+        // head truncation only works on one line, so pick the tail that fits ourselves.
+        // Questions and permission requests read from the start.
+        let isRecap = prompt.kind == .recap
+        let lines = hoveringPrompt ? 10 : 2
+        let text = isRecap
+            ? Self.tail(of: prompt.text, fittingLines: lines, width: promptWidth)
+            : String(Self.oneLine(prompt.text).prefix(500))
         return VStack(alignment: .leading, spacing: 4) {
             Text(text)
                 .font(prompt.kind == .permission ? .caption.monospaced() : .caption)
-                .foregroundColor(prompt.kind == .recap ? .secondary : .primary)
-                .lineLimit(hoveringPrompt ? 10 : 2)
+                .foregroundColor(isRecap ? .secondary : .primary)
+                .lineLimit(lines)
                 .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { geo in
+                    Color.clear
+                        .onAppear { promptWidth = geo.size.width }
+                        .onChange(of: geo.size.width) { promptWidth = $0 }
+                })
 
             if !prompt.options.isEmpty {
                 if hoveringPrompt {
@@ -745,6 +759,40 @@ private struct SessionRow: View {
                 .fill(Color.primary.opacity(0.06))
         )
         .transition(.opacity)
+    }
+
+    /// The longest ending of `text`, starting at a word, that fits in `lines` lines of caption text
+    static func tail(of text: String, fittingLines lines: Int, width: CGFloat) -> String {
+        let font = NSFont.preferredFont(forTextStyle: .caption1)
+        let maxHeight = ceil(NSLayoutManager().defaultLineHeight(for: font) * CGFloat(lines)) + 1
+        func fits(_ candidate: String) -> Bool {
+            let rect = (candidate as NSString).boundingRect(
+                with: NSSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font]
+            )
+            return rect.height <= maxHeight
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if fits(trimmed) { return trimmed }
+
+        // Binary search over word starts for the earliest one whose tail still fits
+        let starts = trimmed.indices.filter { i in
+            i != trimmed.startIndex && trimmed[trimmed.index(before: i)].isWhitespace && !trimmed[i].isWhitespace
+        }
+        var low = 0, high = starts.count - 1, best: String?
+        while low <= high {
+            let mid = (low + high) / 2
+            let candidate = "…" + trimmed[starts[mid]...]
+            if fits(candidate) {
+                best = candidate
+                high = mid - 1
+            } else {
+                low = mid + 1
+            }
+        }
+        return best ?? "…" + trimmed.suffix(40)
     }
 
     private static func oneLine(_ script: String) -> String {

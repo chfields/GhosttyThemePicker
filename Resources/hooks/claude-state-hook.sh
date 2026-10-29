@@ -67,7 +67,8 @@ if [ "$EVENT" != "UserPromptSubmit" ]; then
         fi
 
         # Preview for the session sidebar: the question (last non-empty line), or else a recap
-        # (the start of the reply, minus markdown markers and code fences)
+        # (the end of the reply, where the outcome and next step usually are, minus markdown
+        # markers and code fences)
         if [ "$STATE" = "asking" ]; then
             PROMPT=$(jq -cn --arg text "$TEXT_CONTENT" '
                 ($text | split("\n") | map(select(test("\\S"))) | last // "") as $line |
@@ -78,7 +79,7 @@ if [ "$EVENT" != "UserPromptSubmit" ]; then
                 ($text | split("\n")
                     | map(select(test("\\S") and (test("^\\s*```") | not))
                           | gsub("\\*\\*"; "") | sub("^\\s*#+\\s*"; ""))
-                    | join("\n") | .[0:600]) as $recap |
+                    | join("\n") | .[-800:]) as $recap |
                 if $recap == "" then null else {kind: "recap", text: $recap, options: [], more: 0} end
             ')
         fi
