@@ -256,17 +256,22 @@ class WindowTracker: ObservableObject {
     // MARK: - Window Loading
 
     private func loadWindowsViaAccessibilityAPI() -> [GhosttyWindow] {
-        let runningApps = NSWorkspace.shared.runningApplications
-        let ghosttyApps = runningApps.filter { $0.bundleIdentifier == "com.mitchellh.ghostty" }
+        // NSWorkspace's list can go stale in a long-running instance (a Ghostty opened after the
+        // Mac slept never showed up), so also take Ghostty processes from this refresh's ps output
+        var ghosttyPids = Set(NSWorkspace.shared.runningApplications
+            .filter { $0.bundleIdentifier == "com.mitchellh.ghostty" }
+            .map(\.processIdentifier))
+        for (pid, info) in cachedProcessTree where info.comm.hasSuffix("/Ghostty.app/Contents/MacOS/ghostty") {
+            ghosttyPids.insert(pid)
+        }
 
-        guard !ghosttyApps.isEmpty else {
+        guard !ghosttyPids.isEmpty else {
             return []
         }
 
         var windows: [GhosttyWindow] = []
 
-        for ghosttyApp in ghosttyApps {
-            let pid = ghosttyApp.processIdentifier
+        for pid in ghosttyPids.sorted() {
             let appElement = AXUIElementCreateApplication(pid)
 
             var windowsRef: CFTypeRef?
