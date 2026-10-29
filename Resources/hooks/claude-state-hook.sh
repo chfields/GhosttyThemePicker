@@ -54,11 +54,20 @@ if [ "$EVENT" != "UserPromptSubmit" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRA
             STATE="asking"
         fi
 
-        # Preview for the session sidebar: the last non-empty line of the message
+        # Preview for the session sidebar: the question (last non-empty line), or else a recap
+        # (the start of the reply, minus markdown markers and code fences)
         if [ "$STATE" = "asking" ]; then
             PROMPT=$(jq -cn --arg text "$TEXT_CONTENT" '
                 ($text | split("\n") | map(select(test("\\S"))) | last // "") as $line |
                 {kind: "question", text: $line, options: [], more: 0}
+            ')
+        else
+            PROMPT=$(jq -cn --arg text "$TEXT_CONTENT" '
+                ($text | split("\n")
+                    | map(select(test("\\S") and (test("^\\s*```") | not))
+                          | gsub("\\*\\*"; "") | sub("^\\s*#+\\s*"; ""))
+                    | join("\n") | .[0:600]) as $recap |
+                if $recap == "" then null else {kind: "recap", text: $recap, options: [], more: 0} end
             ')
         fi
     fi

@@ -573,11 +573,13 @@ struct HookStateEntry {
     let prompt: HookPrompt?
 }
 
-/// What Claude is asking, recorded by the hooks so the session sidebar can preview it
+/// What Claude is asking (or, once finished, a recap of its reply), recorded by the hooks
+/// so the session sidebar can preview it
 struct HookPrompt: Equatable {
     enum Kind: String {
         case question    // AskUserQuestion, or a question at the end of Claude's reply
         case permission  // permission prompt for a tool call
+        case recap       // start of Claude's last reply, for a finished session
     }
 
     let kind: Kind
@@ -2455,9 +2457,9 @@ struct GeneralSettingsView: View {
                     .labelsHidden()
                     .frame(width: 240)
                 }
-                Toggle("Show what Claude is asking", isOn: $sidebarShowsPrompt)
+                Toggle("Show Claude's question or recap", isOn: $sidebarShowsPrompt)
                     .padding(.top, 4)
-                Text("Preview questions and permission requests under sessions that need you")
+                Text("Preview questions and permission requests under sessions that need you, and the start of Claude's reply under Ready sessions")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 if sidebarShowsPrompt && hooksNeedUpdate {

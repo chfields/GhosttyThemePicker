@@ -43,7 +43,7 @@ class SessionSidebarPanel: ObservableObject {
     @Published private(set) var activeWindowKey: String?
     @Published private(set) var ghosttyIsFrontmost = false
 
-    /// UserDefaults key: preview what Claude is asking under sessions that need you
+    /// UserDefaults key: preview what Claude is asking (Needs You) or a recap of its reply (Ready)
     static let showsPromptKey = "sessionSidebarShowsPrompt"
 
     /// Opens the Settings window; set by the menu bar content, which has the SwiftUI openWindow action
@@ -378,7 +378,7 @@ struct SessionSidebarView: View {
     /// Sidebar options, mirrored in Settings → General (both read the same UserDefaults keys)
     private var optionsMenu: some View {
         Menu {
-            Toggle("Show What Claude Is Asking", isOn: $showsPrompt)
+            Toggle("Show Question or Recap", isOn: $showsPrompt)
             Picker("Appearance", selection: $appearance) {
                 ForEach(SidebarAppearance.allCases) { mode in
                     Text(mode.label).tag(mode.rawValue)
@@ -567,7 +567,7 @@ private struct SessionRow: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.head)
-                    if showsPrompt, let prompt = askingPrompt {
+                    if showsPrompt, let prompt = previewPrompt {
                         promptPreview(prompt)
                     }
                     if let shell = window.claudeShellCommand {
@@ -602,7 +602,15 @@ private struct SessionRow: View {
 
     /// What Claude is asking, only while the session is actually asking
     private var askingPrompt: HookPrompt? {
-        window.claudeState == .asking ? window.hookPrompt : nil
+        guard window.claudeState == .asking, let prompt = window.hookPrompt, prompt.kind != .recap else { return nil }
+        return prompt
+    }
+
+    /// The question while asking, or the recap of Claude's reply while Ready
+    private var previewPrompt: HookPrompt? {
+        if let prompt = askingPrompt { return prompt }
+        guard window.claudeState == .waiting, let prompt = window.hookPrompt, prompt.kind == .recap else { return nil }
+        return prompt
     }
 
     private var statusBadge: some View {
@@ -668,13 +676,14 @@ private struct SessionRow: View {
         }
     }
 
-    /// The question or permission request, 2 lines (options on one line) until hovered,
+    /// The question, permission request or recap, 2 lines (options on one line) until hovered,
     /// then expanded in place like the shell line
     private func promptPreview(_ prompt: HookPrompt) -> some View {
         let text = String(Self.oneLine(prompt.text).prefix(500))
         return VStack(alignment: .leading, spacing: 4) {
             Text(text)
                 .font(prompt.kind == .permission ? .caption.monospaced() : .caption)
+                .foregroundColor(prompt.kind == .recap ? .secondary : .primary)
                 .lineLimit(hoveringPrompt ? 10 : 2)
                 .truncationMode(.tail)
 
@@ -699,12 +708,11 @@ private struct SessionRow: View {
                     .foregroundColor(.secondary)
             }
         }
-        .foregroundColor(.primary)
         .padding(6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 5)
-                .fill(statusColor(.asking).opacity(0.12))
+                .fill(statusColor(prompt.kind == .recap ? .waiting : .asking).opacity(0.12))
         )
         .contentShape(Rectangle())
         .onHover { hovering in
