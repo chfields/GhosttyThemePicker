@@ -572,6 +572,7 @@ struct HookStateEntry {
     let timestamp: TimeInterval
     let prompt: HookPrompt?
     let claudePid: pid_t?  // Claude process that wrote it; nil for older hooks (directory only)
+    let transcriptPath: String?  // the session's transcript, for Claude Code's own recap
 }
 
 /// What Claude is asking (or, once finished, a recap of its reply), recorded by the hooks
@@ -580,7 +581,15 @@ struct HookPrompt: Equatable {
     enum Kind: String {
         case question    // AskUserQuestion, or a question at the end of Claude's reply
         case permission  // permission prompt for a tool call
-        case recap       // start of Claude's last reply, for a finished session
+        case recap       // end of Claude's last reply, for a finished session
+        case summary     // Claude Code's own recap ("away summary") of a session left idle
+    }
+
+    init(kind: Kind, text: String) {
+        self.kind = kind
+        self.text = text
+        self.options = []
+        self.moreQuestions = 0
     }
 
     let kind: Kind

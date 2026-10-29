@@ -104,7 +104,8 @@ jq -n \
     --argjson timestamp "$(date +%s)" \
     --argjson prompt "$PROMPT" \
     --argjson claude_pid "${CLAUDE_PID:-null}" \
-    '{state: $state, session_id: $session, cwd: $cwd, timestamp: $timestamp, prompt: $prompt, claude_pid: $claude_pid}' \
+    --arg transcript "$TRANSCRIPT_PATH" \
+    '{state: $state, session_id: $session, cwd: $cwd, timestamp: $timestamp, prompt: $prompt, claude_pid: $claude_pid, transcript_path: $transcript}' \
     > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
 
 # Exit successfully (don't block Claude from stopping)

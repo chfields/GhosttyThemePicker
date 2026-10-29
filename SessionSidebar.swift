@@ -603,14 +603,16 @@ private struct SessionRow: View {
 
     /// What Claude is asking, only while the session is actually asking
     private var askingPrompt: HookPrompt? {
-        guard window.claudeState == .asking, let prompt = window.hookPrompt, prompt.kind != .recap else { return nil }
+        guard window.claudeState == .asking, let prompt = window.hookPrompt,
+              prompt.kind == .question || prompt.kind == .permission else { return nil }
         return prompt
     }
 
     /// The question while asking, or the recap of Claude's reply while Ready
     private var previewPrompt: HookPrompt? {
         if let prompt = askingPrompt { return prompt }
-        guard window.claudeState == .waiting, let prompt = window.hookPrompt, prompt.kind == .recap else { return nil }
+        guard window.claudeState == .waiting, let prompt = window.hookPrompt,
+              prompt.kind == .recap || prompt.kind == .summary else { return nil }
         return prompt
     }
 
@@ -683,7 +685,7 @@ private struct SessionRow: View {
         // A recap keeps its line breaks and shows its end (the outcome / next step); SwiftUI's
         // head truncation only works on one line, so pick the tail that fits ourselves.
         // Questions and permission requests read from the start.
-        let isRecap = prompt.kind == .recap
+        let isRecap = prompt.kind == .recap || prompt.kind == .summary
         let lines = hoveringPrompt ? 10 : 2
         let text = isRecap
             ? Self.tail(of: prompt.text, fittingLines: lines, width: promptWidth)
@@ -726,7 +728,7 @@ private struct SessionRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 5)
-                .fill(statusColor(prompt.kind == .recap ? .waiting : .asking).opacity(0.12))
+                .fill(statusColor(isRecap ? .waiting : .asking).opacity(0.12))
         )
         .contentShape(Rectangle())
         .onHover { hovering in

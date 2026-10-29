@@ -187,6 +187,7 @@ class WindowTracker: ObservableObject {
     private var workstreamCache: [pid_t: String?] = [:]
     private var hookStateCache: [String: HookStateEntry] = [:]  // cwd -> hook state (older hooks without a Claude pid)
     private var hookStateByClaudePid: [pid_t: HookStateEntry] = [:]  // Claude process -> hook state
+    private var awaySummaryCache: [String: (modified: Date, summary: (text: String, date: Date)?)] = [:]  // transcript -> newest recap
     private var lastWorkingSeen: [String: TimeInterval] = [:]  // "pid-axIndex" -> last time the title showed a spinner
     private var claudeShellCache: [pid_t: (isClaudeShell: Bool, started: Date?, script: String?)] = [:]  // child of claude -> classification
 
@@ -241,6 +242,8 @@ class WindowTracker: ObservableObject {
         workstreamCache = workstreamCache.filter { activePids.contains($0.key) }
         claudeShellCache = claudeShellCache.filter { cachedProcessTree[$0.key] != nil }
         hookStateByClaudePid = hookStateByClaudePid.filter { cachedClaudePids.contains($0.key) }
+        let liveTranscripts = Set(hookStateByClaudePid.values.compactMap(\.transcriptPath))
+        awaySummaryCache = awaySummaryCache.filter { liveTranscripts.contains($0.key) }
         let activeKeys = Set(windows.map { "\($0.pid)-\($0.axIndex)" })
         lastWorkingSeen = lastWorkingSeen.filter { activeKeys.contains($0.key) }
 
@@ -427,6 +430,13 @@ class WindowTracker: ObservableObject {
             if let entry = getHookState(forGhosttyPid: pid, windowKey: windowKey) {
                 windows[i].hookState = entry.state
                 windows[i].hookPrompt = entry.prompt
+                // Claude Code writes its own recap to the transcript a few minutes after a session
+                // goes idle (no hook fires); it beats the raw last reply when it's newer than it
+                if entry.state == "waiting", let path = entry.transcriptPath,
+                   let summary = awaySummary(transcriptPath: path),
+                   summary.date.timeIntervalSince1970 >= entry.timestamp {
+                    windows[i].hookPrompt = HookPrompt(kind: .summary, text: summary.text)
+                }
             } else if let cwd = cwdToCheck, let entry = getHookState(forCwd: cwd, windowKey: windowKey) {
                 windows[i].hookState = entry.state
             }
@@ -458,7 +468,8 @@ class WindowTracker: ObservableObject {
                 state: state,
                 timestamp: timestamp,
                 prompt: (json["prompt"] as? [String: Any]).flatMap(HookPrompt.init(json:)),
-                claudePid: (json["claude_pid"] as? Int).map { pid_t($0) }
+                claudePid: (json["claude_pid"] as? Int).map { pid_t($0) },
+                transcriptPath: (json["transcript_path"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             )
 
             if let claudePid = entry.claudePid {
@@ -499,6 +510,40 @@ class WindowTracker: ObservableObject {
             return false
         }
         return entry.claudePid != nil || lastWorking != nil || now - entry.timestamp <= hookStateStaleness
+    }
+
+    /// Newest "away_summary" (the recap Claude Code shows when you come back) in a transcript.
+    /// Only the file's tail is read, and only again once the file changes.
+    private func awaySummary(transcriptPath path: String) -> (text: String, date: Date)? {
+        guard let modified = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else {
+            return nil
+        }
+        if let cached = awaySummaryCache[path], cached.modified == modified {
+            return cached.summary
+        }
+
+        var summary: (text: String, date: Date)?
+        if let handle = FileHandle(forReadingAtPath: path) {
+            defer { try? handle.close() }
+            let size = (try? handle.seekToEnd()) ?? 0
+            try? handle.seek(toOffset: size > 262_144 ? size - 262_144 : 0)
+            let data = (try? handle.readToEnd()) ?? Data()
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            for line in lines.reversed() where line.contains("\"away_summary\"") {
+                guard let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      json["subtype"] as? String == "away_summary",
+                      let text = json["content"] as? String, !text.isEmpty,
+                      let date = (json["timestamp"] as? String).flatMap(formatter.date(from:)) else {
+                    continue
+                }
+                summary = (text, date)
+                break
+            }
+        }
+        awaySummaryCache[path] = (modified, summary)
+        return summary
     }
 
     /// Newest valid state from a Claude process running in this Ghostty process
