@@ -43,7 +43,8 @@ class SessionSidebarPanel: ObservableObject {
     @Published private(set) var activeWindowKey: String?
     @Published private(set) var ghosttyIsFrontmost = false
 
-    /// UserDefaults key: preview what Claude is asking (Needs You) or a recap of its reply (Ready)
+    /// UserDefaults key: preview what Claude is asking (Needs You), saying while it works (Running),
+    /// or a recap once it's done (Ready)
     static let showsPromptKey = "sessionSidebarShowsPrompt"
 
     /// Opens the Settings window; set by the menu bar content, which has the SwiftUI openWindow action
@@ -378,7 +379,7 @@ struct SessionSidebarView: View {
     /// Sidebar options, mirrored in Settings → General (both read the same UserDefaults keys)
     private var optionsMenu: some View {
         Menu {
-            Toggle("Show Question or Recap", isOn: $showsPrompt)
+            Toggle("Show Session Previews", isOn: $showsPrompt)
             Picker("Appearance", selection: $appearance) {
                 ForEach(SidebarAppearance.allCases) { mode in
                     Text(mode.label).tag(mode.rawValue)
@@ -571,6 +572,9 @@ private struct SessionRow: View {
                     if showsPrompt, let prompt = previewPrompt {
                         promptPreview(prompt)
                     }
+                    if showsPrompt, let activity = runningActivity {
+                        activityPreview(activity)
+                    }
                     if let shell = window.claudeShellCommand {
                         shellLine(shell)
                     }
@@ -606,6 +610,14 @@ private struct SessionRow: View {
         guard window.claudeState == .asking, let prompt = window.hookPrompt,
               prompt.kind == .question || prompt.kind == .permission else { return nil }
         return prompt
+    }
+
+    /// Claude's latest message and tool call while it works
+    private var runningActivity: ClaudeActivity? {
+        guard window.claudeState == .working || window.claudeState == .running,
+              let activity = window.activity,
+              activity.message != nil || activity.action != nil else { return nil }
+        return activity
     }
 
     /// The question while asking, or the recap of Claude's reply while Ready
@@ -729,6 +741,48 @@ private struct SessionRow: View {
         .background(
             RoundedRectangle(cornerRadius: 5)
                 .fill(statusColor(isRecap ? .waiting : .asking).opacity(0.12))
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { hoveringPrompt = hovering }
+        }
+    }
+
+    /// Claude's latest message (its last two lines, more on hover) and, under it, the tool it's
+    /// running. A Bash call is left out when the shell line below already shows it.
+    private func activityPreview(_ activity: ClaudeActivity) -> some View {
+        let lines = hoveringPrompt ? 10 : 2
+        let showsAction = activity.action.map { !($0.hasPrefix("Bash") && window.claudeShellCommand != nil) } ?? false
+        return VStack(alignment: .leading, spacing: 4) {
+            if let message = activity.message {
+                Text(Self.tail(of: message, fittingLines: lines, width: promptWidth))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(lines)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(GeometryReader { geo in
+                        Color.clear
+                            .onAppear { promptWidth = geo.size.width }
+                            .onChange(of: geo.size.width) { promptWidth = $0 }
+                    })
+            }
+            if showsAction, let action = activity.action {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                    Text(action)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .font(.caption.monospaced())
+                .foregroundColor(statusColor(.working))
+            }
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(statusColor(.working).opacity(0.10))
         )
         .contentShape(Rectangle())
         .onHover { hovering in

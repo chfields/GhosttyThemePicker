@@ -610,6 +610,12 @@ struct HookPrompt: Equatable {
     }
 }
 
+/// What Claude is doing in a working session, read from its transcript
+struct ClaudeActivity: Equatable {
+    var message: String?  // Claude's latest text in the current turn
+    var action: String?   // latest tool call in the current turn, e.g. "Edit · WindowTracker.swift"
+}
+
 struct GhosttyWindow: Identifiable {
     let id: Int
     let name: String              // Window title (e.g., "✳ Claude Code" or "~/Projects")
@@ -620,6 +626,7 @@ struct GhosttyWindow: Identifiable {
     var hasClaudeProcess: Bool = false  // Whether a Claude process is running in this window
     var hookState: String?        // State from Claude Code hook ("asking" or "waiting")
     var hookPrompt: HookPrompt?   // What Claude is asking, when the hook recorded it
+    var activity: ClaudeActivity? // What Claude is saying/doing while it works
     var claudeShellCommand: ClaudeShellCommand?  // Command Claude's Bash tool is running, if any
 
     /// Determine Claude's state based on window title, hook state, and process detection
@@ -2467,9 +2474,9 @@ struct GeneralSettingsView: View {
                     .labelsHidden()
                     .frame(width: 240)
                 }
-                Toggle("Show Claude's question or recap", isOn: $sidebarShowsPrompt)
+                Toggle("Show session previews", isOn: $sidebarShowsPrompt)
                     .padding(.top, 4)
-                Text("Preview questions and permission requests under sessions that need you, and the start of Claude's reply under Ready sessions")
+                Text("Questions and permission requests under Needs You, Claude's latest message and action under Running, and a recap under Ready")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 if sidebarShowsPrompt && hooksNeedUpdate {
