@@ -34,20 +34,16 @@ PROMPT="null"
 
 # A submitted prompt answers whatever was pending, so UserPromptSubmit always clears to "waiting".
 # Otherwise (Stop), analyze Claude's last message
-if [ "$EVENT" != "UserPromptSubmit" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    # Get the last assistant message from the transcript
-    # The transcript is JSONL format with conversation turns
-    LAST_ASSISTANT_MSG=$(tail -100 "$TRANSCRIPT_PATH" | jq -s '
-        [.[] | select(.type == "assistant" or .role == "assistant")] | last |
-        if .message then .message.content
-        elif .content then .content
-        else null end
-    ' 2>/dev/null)
+if [ "$EVENT" != "UserPromptSubmit" ]; then
+    # Claude Code passes the final reply in the hook input; prefer it, since the transcript
+    # may not have the reply written yet when this hook runs
+    TEXT_CONTENT=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
 
-    # Check if the message ends with a question mark or contains question patterns
-    if [ -n "$LAST_ASSISTANT_MSG" ] && [ "$LAST_ASSISTANT_MSG" != "null" ]; then
-        # Extract text content (handle array of content blocks)
-        TEXT_CONTENT=$(echo "$LAST_ASSISTANT_MSG" | jq -r '
+    # Older Claude Code: get the last assistant message from the transcript (JSONL)
+    if [ -z "$TEXT_CONTENT" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+        TEXT_CONTENT=$(tail -100 "$TRANSCRIPT_PATH" | jq -s -r '
+            [.[] | select(.type == "assistant" or .role == "assistant")] | last |
+            (if .message then .message.content elif .content then .content else null end) |
             if type == "array" then
                 [.[] | select(.type == "text") | .text] | join(" ")
             elif type == "string" then
@@ -56,7 +52,9 @@ if [ "$EVENT" != "UserPromptSubmit" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRA
                 ""
             end
         ' 2>/dev/null)
+    fi
 
+    if [ -n "$TEXT_CONTENT" ]; then
         # Check for question indicators
         # - Ends with ?
         # - Contains question patterns like "Would you like", "Do you want", "Should I"
