@@ -187,6 +187,7 @@ class WindowTracker: ObservableObject {
     private var workstreamCache: [pid_t: String?] = [:]
     private var hookStateCache: [String: HookStateEntry] = [:]  // cwd -> hook state (older hooks without a Claude pid)
     private var hookStateByClaudePid: [pid_t: HookStateEntry] = [:]  // Claude process -> hook state
+    private var lastAXWindows: [pid_t: [(axIndex: Int, title: String)]] = [:]  // last successful AX listing per Ghostty process
     private var transcriptCache: [String: (modified: Date, activity: TranscriptActivity)] = [:]  // transcript -> what its tail says
     private var lastWorkingSeen: [String: TimeInterval] = [:]  // "pid-axIndex" -> last time the title showed a spinner
     private var claudeShellCache: [pid_t: (isClaudeShell: Bool, started: Date?, script: String?)] = [:]  // child of claude -> classification
@@ -256,17 +257,23 @@ class WindowTracker: ObservableObject {
     // MARK: - Window Loading
 
     private func loadWindowsViaAccessibilityAPI() -> [GhosttyWindow] {
-        let runningApps = NSWorkspace.shared.runningApplications
-        let ghosttyApps = runningApps.filter { $0.bundleIdentifier == "com.mitchellh.ghostty" }
+        // NSWorkspace's list can go stale in a long-running instance (a Ghostty opened after the
+        // Mac slept never showed up), so also take Ghostty processes from this refresh's ps output
+        var ghosttyPids = Set(NSWorkspace.shared.runningApplications
+            .filter { $0.bundleIdentifier == "com.mitchellh.ghostty" }
+            .map(\.processIdentifier))
+        for (pid, info) in cachedProcessTree where info.comm.hasSuffix("/Ghostty.app/Contents/MacOS/ghostty") {
+            ghosttyPids.insert(pid)
+        }
 
-        guard !ghosttyApps.isEmpty else {
+        lastAXWindows = lastAXWindows.filter { ghosttyPids.contains($0.key) }
+        guard !ghosttyPids.isEmpty else {
             return []
         }
 
         var windows: [GhosttyWindow] = []
 
-        for ghosttyApp in ghosttyApps {
-            let pid = ghosttyApp.processIdentifier
+        for pid in ghosttyPids.sorted() {
             let appElement = AXUIElementCreateApplication(pid)
 
             var windowsRef: CFTypeRef?
@@ -274,9 +281,16 @@ class WindowTracker: ObservableObject {
 
             guard result == .success,
                   let axWindows = windowsRef as? [AXUIElement] else {
+                // A busy Ghostty can fail to answer in time (kAXErrorCannotComplete); keep its last
+                // known windows rather than dropping them from the list for this refresh
+                for cached in lastAXWindows[pid] ?? [] {
+                    windows.append(GhosttyWindow(id: windows.count + 1, name: cached.title, axIndex: cached.axIndex, pid: pid))
+                }
                 continue
             }
 
+            var listed: [(axIndex: Int, title: String)] = []
+            defer { lastAXWindows[pid] = listed }
             for (perProcessIndex, windowElement) in axWindows.enumerated() {
                 // Get window title
                 var titleRef: CFTypeRef?
@@ -295,6 +309,7 @@ class WindowTracker: ObservableObject {
 
                 let id = windows.count + 1
                 windows.append(GhosttyWindow(id: id, name: title, axIndex: perProcessIndex + 1, pid: pid))
+                listed.append((perProcessIndex + 1, title))
             }
         }
 
