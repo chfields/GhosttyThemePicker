@@ -186,7 +186,8 @@ class SessionSidebarPanel: ObservableObject {
         panel.setFrame(NSRect(x: visible.minX, y: visible.minY, width: width, height: visible.height), display: true)
     }
 
-    /// Focus a session and tile its window into the space right of the sidebar
+    /// Focus a session and tile its window into the space right of the sidebar. A window on another
+    /// display is only focused, left where it is.
     func focusAndDock(_ window: GhosttyWindow) {
         // Resolve the AX element before focusing: raising a window reorders the per-process AX list
         let element = WindowTracker.shared.axWindow(axIndex: window.axIndex, pid: window.pid)
@@ -194,6 +195,11 @@ class SessionSidebarPanel: ObservableObject {
 
         guard let element = element,
               let panel = panel, let screen = panel.screen ?? NSScreen.main else { return }
+        if let frame = WindowTracker.shared.frame(of: element),
+           let windowScreen = Self.screen(containingMostOf: frame),
+           windowScreen != screen {
+            return
+        }
         let visible = screen.visibleFrame
         let target = NSRect(
             x: panel.frame.maxX,
@@ -202,6 +208,15 @@ class SessionSidebarPanel: ObservableObject {
             height: visible.height
         )
         WindowTracker.shared.setFrame(target, of: element)
+    }
+
+    /// The display holding the largest part of `frame` (Cocoa coordinates)
+    private static func screen(containingMostOf frame: NSRect) -> NSScreen? {
+        NSScreen.screens
+            .map { ($0, $0.frame.intersection(frame)) }
+            .filter { !$0.1.isNull }
+            .max { $0.1.width * $0.1.height < $1.1.width * $1.1.height }?
+            .0
     }
 }
 
@@ -215,6 +230,22 @@ extension WindowTracker {
             return nil
         }
         return windows[axIndex - 1]
+    }
+
+    /// A window's frame via Accessibility, in Cocoa screen coordinates
+    func frame(of windowElement: AXUIElement) -> NSRect? {
+        var positionRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(windowElement, kAXPositionAttribute as CFString, &positionRef) == .success,
+              AXUIElementCopyAttributeValue(windowElement, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let positionRef = positionRef, let sizeRef = sizeRef else { return nil }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionRef as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else { return nil }
+        // AX uses a top-left origin relative to the primary screen; Cocoa uses bottom-left
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSRect(x: origin.x, y: primaryHeight - origin.y - size.height, width: size.width, height: size.height)
     }
 
     /// Move/resize a window via Accessibility. `frame` is in Cocoa screen coordinates.
