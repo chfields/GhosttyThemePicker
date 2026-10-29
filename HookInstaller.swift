@@ -49,6 +49,20 @@ class HookInstaller {
         return settingsContainHooks(settings)
     }
 
+    /// Installed but older than the scripts bundled with this app (e.g. they don't record prompts yet)
+    func hooksNeedUpdate() -> Bool {
+        guard areHooksInstalled() else { return false }
+        return [stateHookFilename, permissionHookFilename].contains { filename in
+            guard let bundlePath = Bundle.main.path(forResource: filename, ofType: nil, inDirectory: "hooks")
+                    ?? Bundle.main.path(forResource: filename, ofType: nil) else {
+                return false
+            }
+            let installed = try? Data(contentsOf: hooksDir.appendingPathComponent(filename))
+            let bundled = try? Data(contentsOf: URL(fileURLWithPath: bundlePath))
+            return installed != bundled
+        }
+    }
+
     /// Install hooks and configure settings.json
     func installHooks() throws {
         // Create directories if needed

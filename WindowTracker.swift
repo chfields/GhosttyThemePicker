@@ -185,7 +185,8 @@ class WindowTracker: ObservableObject {
     private var cachedClaudePids: Set<pid_t> = []
     private var cachedShellCwds: [pid_t: String] = [:]
     private var workstreamCache: [pid_t: String?] = [:]
-    private var hookStateCache: [String: (state: String, timestamp: TimeInterval)] = [:]  // cwd -> hook state
+    private var hookStateCache: [String: HookStateEntry] = [:]  // cwd -> hook state
+    private var lastWorkingSeen: [String: TimeInterval] = [:]  // "pid-axIndex" -> last time the title showed a spinner
     private var claudeShellCache: [pid_t: (isClaudeShell: Bool, started: Date?, script: String?)] = [:]  // child of claude -> classification
 
     private init() {}
@@ -238,6 +239,8 @@ class WindowTracker: ObservableObject {
         let activePids = Set(windows.map { $0.pid })
         workstreamCache = workstreamCache.filter { activePids.contains($0.key) }
         claudeShellCache = claudeShellCache.filter { cachedProcessTree[$0.key] != nil }
+        let activeKeys = Set(windows.map { "\($0.pid)-\($0.axIndex)" })
+        lastWorkingSeen = lastWorkingSeen.filter { activeKeys.contains($0.key) }
 
         // Update published property on main thread
         DispatchQueue.main.async {
@@ -412,8 +415,14 @@ class WindowTracker: ObservableObject {
                 cwdToCheck = themeManager?.directoryForWorkstream(wsName)
             }
 
-            if let cwd = cwdToCheck {
-                windows[i].hookState = getHookState(forCwd: cwd)
+            let windowKey = "\(pid)-\(windows[i].axIndex)"
+            if windows[i].claudeState == .working {
+                lastWorkingSeen[windowKey] = Date().timeIntervalSince1970
+            }
+
+            if let cwd = cwdToCheck, let entry = getHookState(forCwd: cwd, windowKey: windowKey) {
+                windows[i].hookState = entry.state
+                windows[i].hookPrompt = entry.prompt
             }
         }
     }
@@ -439,15 +448,20 @@ class WindowTracker: ObservableObject {
                   let timestamp = json["timestamp"] as? TimeInterval else {
                 continue
             }
+            let entry = HookStateEntry(
+                state: state,
+                timestamp: timestamp,
+                prompt: (json["prompt"] as? [String: Any]).flatMap(HookPrompt.init(json:))
+            )
 
             // Only update cache if this is newer than what we have
             // This keeps "asking" state until a newer state replaces it
             if let existing = hookStateCache[cwd] {
                 if timestamp > existing.timestamp {
-                    hookStateCache[cwd] = (state: state, timestamp: timestamp)
+                    hookStateCache[cwd] = entry
                 }
             } else {
-                hookStateCache[cwd] = (state: state, timestamp: timestamp)
+                hookStateCache[cwd] = entry
             }
         }
     }
@@ -457,19 +471,31 @@ class WindowTracker: ObservableObject {
     /// fires for a given session/profile - falls back to title/process detection instead.
     private let hookStateStaleness: TimeInterval = 120
 
-    private func getHookState(forCwd cwd: String) -> String? {
+    /// A hook state stays valid past the staleness window while the window hasn't worked since
+    /// the hook wrote it: we saw Claude working, then the hook fired, and nothing has happened since,
+    /// so a question left open for several minutes is still shown as one
+    private func isHookStateValid(_ entry: HookStateEntry, windowKey: String, now: TimeInterval) -> Bool {
+        if now - entry.timestamp <= hookStateStaleness {
+            return true
+        }
+        // Hook timestamps are whole seconds; compare at the same resolution
+        guard let lastWorking = lastWorkingSeen[windowKey] else { return false }
+        return lastWorking.rounded(.down) <= entry.timestamp
+    }
+
+    private func getHookState(forCwd cwd: String, windowKey: String) -> HookStateEntry? {
         let now = Date().timeIntervalSince1970
 
         // Direct match
-        if let cached = hookStateCache[cwd], now - cached.timestamp <= hookStateStaleness {
-            return cached.state
+        if let cached = hookStateCache[cwd], isHookStateValid(cached, windowKey: windowKey, now: now) {
+            return cached
         }
 
         // Try matching by subdirectory (hook might be running in a subdirectory)
         for (cachedCwd, cached) in hookStateCache {
-            guard now - cached.timestamp <= hookStateStaleness else { continue }
+            guard isHookStateValid(cached, windowKey: windowKey, now: now) else { continue }
             if cwd.hasPrefix(cachedCwd + "/") || cachedCwd.hasPrefix(cwd + "/") {
-                return cached.state
+                return cached
             }
         }
 

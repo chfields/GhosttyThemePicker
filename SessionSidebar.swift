@@ -43,6 +43,12 @@ class SessionSidebarPanel: ObservableObject {
     @Published private(set) var activeWindowKey: String?
     @Published private(set) var ghosttyIsFrontmost = false
 
+    /// UserDefaults key: preview what Claude is asking under sessions that need you
+    static let showsPromptKey = "sessionSidebarShowsPrompt"
+
+    /// Opens the Settings window; set by the menu bar content, which has the SwiftUI openWindow action
+    var openSettings: (() -> Void)?
+
     private var panel: NSPanel?
     private let width: CGFloat = 280
     private let visibleKey = "sessionSidebarVisible"
@@ -264,6 +270,8 @@ struct SessionSidebarView: View {
     // When each session entered its current state, keyed by pid + window index
     @State private var stateSince: [String: (state: ClaudeState, since: Date)] = [:]
     @State private var missingPermissions: [SidebarPermission] = []
+    @AppStorage(SessionSidebarPanel.showsPromptKey) private var showsPrompt = true
+    @AppStorage(SidebarAppearance.defaultsKey) private var appearance = SidebarAppearance.system.rawValue
 
     // Permissions can be granted/revoked in System Settings at any time, so re-check periodically
     private let permissionTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
@@ -306,7 +314,8 @@ struct SessionSidebarView: View {
                                     window: window,
                                     themeColors: themeColors(for: window),
                                     since: stateSince[key(for: window)]?.since,
-                                    highlight: highlight(for: window)
+                                    highlight: highlight(for: window),
+                                    showsPrompt: showsPrompt
                                 ) {
                                     SessionSidebarPanel.shared.focusAndDock(window)
                                 }
@@ -350,6 +359,7 @@ struct SessionSidebarView: View {
             Text("SESSIONS")
                 .font(.headline)
             Spacer()
+            optionsMenu
             Button(action: onClose) {
                 Image(systemName: "sidebar.left")
             }
@@ -359,6 +369,33 @@ struct SessionSidebarView: View {
         .padding(.horizontal, 12)
         .padding(.top, 12)
         .padding(.bottom, 8)
+    }
+
+    /// Sidebar options, mirrored in Settings → General (both read the same UserDefaults keys)
+    private var optionsMenu: some View {
+        Menu {
+            Toggle("Show What Claude Is Asking", isOn: $showsPrompt)
+            Picker("Appearance", selection: $appearance) {
+                ForEach(SidebarAppearance.allCases) { mode in
+                    Text(mode.label).tag(mode.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            Divider()
+            Button("Sidebar Settings…") {
+                sidebar.openSettings?()
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Sidebar options")
+        .onChange(of: appearance) { _ in
+            sidebar.applyAppearance()
+        }
     }
 
     private func key(for window: GhosttyWindow) -> String {
@@ -488,6 +525,7 @@ private struct SessionRow: View {
     let themeColors: ThemeColors?  // nil = theme unknown
     let since: Date?
     let highlight: Highlight
+    let showsPrompt: Bool
     let onFocus: () -> Void
 
     enum Highlight {
@@ -498,6 +536,7 @@ private struct SessionRow: View {
 
     @State private var hovering = false
     @State private var hoveringShell = false
+    @State private var hoveringPrompt = false
 
     var body: some View {
         Button(action: onFocus) {
@@ -524,6 +563,9 @@ private struct SessionRow: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                    if showsPrompt, let prompt = askingPrompt {
+                        promptPreview(prompt)
+                    }
                     if let shell = window.claudeShellCommand {
                         shellLine(shell)
                     }
@@ -554,11 +596,18 @@ private struct SessionRow: View {
         }
     }
 
+    /// What Claude is asking, only while the session is actually asking
+    private var askingPrompt: HookPrompt? {
+        window.claudeState == .asking ? window.hookPrompt : nil
+    }
+
     private var statusBadge: some View {
         let state = window.claudeState
+        // A permission prompt gets its own label: it's a quick yes/no, not a question to think about
+        let isPermission = askingPrompt?.kind == .permission
         return HStack(spacing: 3) {
-            Image(systemName: state.icon)
-            Text(state == .notRunning ? "Idle" : state.label)
+            Image(systemName: isPermission ? "lock.circle" : state.icon)
+            Text(isPermission ? "Allow?" : state == .notRunning ? "Idle" : state.label)
         }
         .font(.caption.weight(.semibold))
         .foregroundColor(statusColor(state))
@@ -612,6 +661,50 @@ private struct SessionRow: View {
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { hoveringShell = hovering }
+        }
+    }
+
+    /// The question or permission request, 2 lines (options on one line) until hovered,
+    /// then expanded in place like the shell line
+    private func promptPreview(_ prompt: HookPrompt) -> some View {
+        let text = String(Self.oneLine(prompt.text).prefix(500))
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(text)
+                .font(prompt.kind == .permission ? .caption.monospaced() : .caption)
+                .lineLimit(hoveringPrompt ? 10 : 2)
+                .truncationMode(.tail)
+
+            if !prompt.options.isEmpty {
+                if hoveringPrompt {
+                    ForEach(Array(prompt.options.enumerated()), id: \.offset) { _, option in
+                        Text("○ \(option)")
+                    }
+                    .font(.caption)
+                } else {
+                    let shown = prompt.options.prefix(2).map { "○ \($0)" }.joined(separator: "  ")
+                    let extra = prompt.options.count - 2
+                    Text(extra > 0 ? "\(shown)  +\(extra)" : shown)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+            }
+
+            if prompt.moreQuestions > 0 {
+                Text("+\(prompt.moreQuestions) more question\(prompt.moreQuestions == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .foregroundColor(.primary)
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(statusColor(.asking).opacity(0.12))
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { hoveringPrompt = hovering }
         }
     }
 

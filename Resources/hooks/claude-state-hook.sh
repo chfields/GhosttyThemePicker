@@ -10,6 +10,7 @@ INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
 
 # Create state directory if needed
 STATE_DIR="$HOME/.claude-states"
@@ -17,9 +18,11 @@ mkdir -p "$STATE_DIR"
 
 # Default state
 STATE="waiting"
+PROMPT="null"
 
-# If we have a transcript, analyze Claude's last message
-if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+# A submitted prompt answers whatever was pending, so UserPromptSubmit always clears to "waiting".
+# Otherwise (Stop), analyze Claude's last message
+if [ "$EVENT" != "UserPromptSubmit" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Get the last assistant message from the transcript
     # The transcript is JSONL format with conversation turns
     LAST_ASSISTANT_MSG=$(tail -100 "$TRANSCRIPT_PATH" | jq -s '
@@ -50,6 +53,14 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         elif echo "$TEXT_CONTENT" | grep -qiE '(would you like|do you want|should i|shall i|can you|could you|may i|let me know|please confirm|which.*prefer|what.*like)'; then
             STATE="asking"
         fi
+
+        # Preview for the session sidebar: the last non-empty line of the message
+        if [ "$STATE" = "asking" ]; then
+            PROMPT=$(jq -cn --arg text "$TEXT_CONTENT" '
+                ($text | split("\n") | map(select(test("\\S"))) | last // "") as $line |
+                {kind: "question", text: $line, options: [], more: 0}
+            ')
+        fi
     fi
 fi
 
@@ -58,14 +69,15 @@ fi
 CWD_HASH=$(echo "$CWD" | md5 | cut -c1-8)
 STATE_FILE="$STATE_DIR/state-$CWD_HASH.json"
 
-cat > "$STATE_FILE" << EOF
-{
-  "state": "$STATE",
-  "session_id": "$SESSION_ID",
-  "cwd": "$CWD",
-  "timestamp": $(date +%s)
-}
-EOF
+# Write atomically so the app never reads a half-written file
+jq -n \
+    --arg state "$STATE" \
+    --arg session "$SESSION_ID" \
+    --arg cwd "$CWD" \
+    --argjson timestamp "$(date +%s)" \
+    --argjson prompt "$PROMPT" \
+    '{state: $state, session_id: $session, cwd: $cwd, timestamp: $timestamp, prompt: $prompt}' \
+    > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
 
 # Exit successfully (don't block Claude from stopping)
 exit 0
