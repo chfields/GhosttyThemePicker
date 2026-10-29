@@ -43,6 +43,12 @@ class SessionSidebarPanel: ObservableObject {
     @Published private(set) var activeWindowKey: String?
     @Published private(set) var ghosttyIsFrontmost = false
 
+    /// UserDefaults key: preview what Claude is asking (Needs You) or a recap of its reply (Ready)
+    static let showsPromptKey = "sessionSidebarShowsPrompt"
+
+    /// Opens the Settings window; set by the menu bar content, which has the SwiftUI openWindow action
+    var openSettings: (() -> Void)?
+
     private var panel: NSPanel?
     private let width: CGFloat = 280
     private let visibleKey = "sessionSidebarVisible"
@@ -235,21 +241,25 @@ extension WindowTracker {
 
 /// Sidebar grouping: status matters more than the exact Claude state
 private enum SessionGroup: Int, CaseIterable {
-    case needsYou, running, idle
+    case needsYou, ready, running, terminals
 
     var title: String {
         switch self {
         case .needsYou: return "NEEDS YOU"
+        case .ready: return "READY"
         case .running: return "RUNNING"
-        case .idle: return "IDLE"
+        case .terminals: return "TERMINALS"
         }
     }
 
+    /// Needs You is only for something blocking Claude (a question or permission prompt);
+    /// a finished session waiting for the next prompt is Ready, so real questions don't get buried
     static func of(_ state: ClaudeState) -> SessionGroup {
         switch state {
-        case .asking, .waiting: return .needsYou
+        case .asking: return .needsYou
+        case .waiting: return .ready
         case .working, .running: return .running
-        case .notRunning: return .idle
+        case .notRunning: return .terminals
         }
     }
 }
@@ -264,6 +274,8 @@ struct SessionSidebarView: View {
     // When each session entered its current state, keyed by pid + window index
     @State private var stateSince: [String: (state: ClaudeState, since: Date)] = [:]
     @State private var missingPermissions: [SidebarPermission] = []
+    @AppStorage(SessionSidebarPanel.showsPromptKey) private var showsPrompt = true
+    @AppStorage(SidebarAppearance.defaultsKey) private var appearance = SidebarAppearance.system.rawValue
 
     // Permissions can be granted/revoked in System Settings at any time, so re-check periodically
     private let permissionTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
@@ -306,7 +318,8 @@ struct SessionSidebarView: View {
                                     window: window,
                                     themeColors: themeColors(for: window),
                                     since: stateSince[key(for: window)]?.since,
-                                    highlight: highlight(for: window)
+                                    highlight: highlight(for: window),
+                                    showsPrompt: showsPrompt
                                 ) {
                                     SessionSidebarPanel.shared.focusAndDock(window)
                                 }
@@ -350,6 +363,7 @@ struct SessionSidebarView: View {
             Text("SESSIONS")
                 .font(.headline)
             Spacer()
+            optionsMenu
             Button(action: onClose) {
                 Image(systemName: "sidebar.left")
             }
@@ -359,6 +373,33 @@ struct SessionSidebarView: View {
         .padding(.horizontal, 12)
         .padding(.top, 12)
         .padding(.bottom, 8)
+    }
+
+    /// Sidebar options, mirrored in Settings → General (both read the same UserDefaults keys)
+    private var optionsMenu: some View {
+        Menu {
+            Toggle("Show Question or Recap", isOn: $showsPrompt)
+            Picker("Appearance", selection: $appearance) {
+                ForEach(SidebarAppearance.allCases) { mode in
+                    Text(mode.label).tag(mode.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            Divider()
+            Button("Sidebar Settings…") {
+                sidebar.openSettings?()
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Sidebar options")
+        .onChange(of: appearance) { _ in
+            sidebar.applyAppearance()
+        }
     }
 
     private func key(for window: GhosttyWindow) -> String {
@@ -488,6 +529,7 @@ private struct SessionRow: View {
     let themeColors: ThemeColors?  // nil = theme unknown
     let since: Date?
     let highlight: Highlight
+    let showsPrompt: Bool
     let onFocus: () -> Void
 
     enum Highlight {
@@ -498,6 +540,8 @@ private struct SessionRow: View {
 
     @State private var hovering = false
     @State private var hoveringShell = false
+    @State private var hoveringPrompt = false
+    @State private var promptWidth: CGFloat = 220
 
     var body: some View {
         Button(action: onFocus) {
@@ -524,6 +568,9 @@ private struct SessionRow: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                    if showsPrompt, let prompt = previewPrompt {
+                        promptPreview(prompt)
+                    }
                     if let shell = window.claudeShellCommand {
                         shellLine(shell)
                     }
@@ -554,11 +601,28 @@ private struct SessionRow: View {
         }
     }
 
+    /// What Claude is asking, only while the session is actually asking
+    private var askingPrompt: HookPrompt? {
+        guard window.claudeState == .asking, let prompt = window.hookPrompt,
+              prompt.kind == .question || prompt.kind == .permission else { return nil }
+        return prompt
+    }
+
+    /// The question while asking, or the recap of Claude's reply while Ready
+    private var previewPrompt: HookPrompt? {
+        if let prompt = askingPrompt { return prompt }
+        guard window.claudeState == .waiting, let prompt = window.hookPrompt,
+              prompt.kind == .recap || prompt.kind == .summary else { return nil }
+        return prompt
+    }
+
     private var statusBadge: some View {
         let state = window.claudeState
+        // A permission prompt gets its own label: it's a quick yes/no, not a question to think about
+        let isPermission = askingPrompt?.kind == .permission
         return HStack(spacing: 3) {
-            Image(systemName: state.icon)
-            Text(state == .notRunning ? "Idle" : state.label)
+            Image(systemName: isPermission ? "lock.circle" : state.icon)
+            Text(isPermission ? "Allow?" : state == .notRunning ? "Shell" : state.label)
         }
         .font(.caption.weight(.semibold))
         .foregroundColor(statusColor(state))
@@ -615,6 +679,63 @@ private struct SessionRow: View {
         }
     }
 
+    /// The question, permission request or recap, 2 lines (options on one line) until hovered,
+    /// then expanded in place like the shell line
+    private func promptPreview(_ prompt: HookPrompt) -> some View {
+        // A recap keeps its line breaks and shows its end (the outcome / next step); SwiftUI's
+        // head truncation only works on one line, so pick the tail that fits ourselves.
+        // Questions and permission requests read from the start.
+        let isRecap = prompt.kind == .recap || prompt.kind == .summary
+        let lines = hoveringPrompt ? 10 : 2
+        let text = isRecap
+            ? Self.tail(of: prompt.text, fittingLines: lines, width: promptWidth)
+            : String(Self.oneLine(prompt.text).prefix(500))
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(text)
+                .font(prompt.kind == .permission ? .caption.monospaced() : .caption)
+                .foregroundColor(isRecap ? .secondary : .primary)
+                .lineLimit(lines)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { geo in
+                    Color.clear
+                        .onAppear { promptWidth = geo.size.width }
+                        .onChange(of: geo.size.width) { promptWidth = $0 }
+                })
+
+            if !prompt.options.isEmpty {
+                if hoveringPrompt {
+                    ForEach(Array(prompt.options.enumerated()), id: \.offset) { _, option in
+                        Text("○ \(option)")
+                    }
+                    .font(.caption)
+                } else {
+                    let shown = prompt.options.prefix(2).map { "○ \($0)" }.joined(separator: "  ")
+                    let extra = prompt.options.count - 2
+                    Text(extra > 0 ? "\(shown)  +\(extra)" : shown)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+            }
+
+            if prompt.moreQuestions > 0 {
+                Text("+\(prompt.moreQuestions) more question\(prompt.moreQuestions == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(statusColor(isRecap ? .waiting : .asking).opacity(0.12))
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { hoveringPrompt = hovering }
+        }
+    }
+
     /// Every running shell: label, age, and (shortened) command Claude ran
     private func shellDetail(_ shell: ClaudeShellCommand) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -640,6 +761,40 @@ private struct SessionRow: View {
                 .fill(Color.primary.opacity(0.06))
         )
         .transition(.opacity)
+    }
+
+    /// The longest ending of `text`, starting at a word, that fits in `lines` lines of caption text
+    static func tail(of text: String, fittingLines lines: Int, width: CGFloat) -> String {
+        let font = NSFont.preferredFont(forTextStyle: .caption1)
+        let maxHeight = ceil(NSLayoutManager().defaultLineHeight(for: font) * CGFloat(lines)) + 1
+        func fits(_ candidate: String) -> Bool {
+            let rect = (candidate as NSString).boundingRect(
+                with: NSSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font]
+            )
+            return rect.height <= maxHeight
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if fits(trimmed) { return trimmed }
+
+        // Binary search over word starts for the earliest one whose tail still fits
+        let starts = trimmed.indices.filter { i in
+            i != trimmed.startIndex && trimmed[trimmed.index(before: i)].isWhitespace && !trimmed[i].isWhitespace
+        }
+        var low = 0, high = starts.count - 1, best: String?
+        while low <= high {
+            let mid = (low + high) / 2
+            let candidate = "…" + trimmed[starts[mid]...]
+            if fits(candidate) {
+                best = candidate
+                high = mid - 1
+            } else {
+                low = mid + 1
+            }
+        }
+        return best ?? "…" + trimmed.suffix(40)
     }
 
     private static func oneLine(_ script: String) -> String {

@@ -185,7 +185,10 @@ class WindowTracker: ObservableObject {
     private var cachedClaudePids: Set<pid_t> = []
     private var cachedShellCwds: [pid_t: String] = [:]
     private var workstreamCache: [pid_t: String?] = [:]
-    private var hookStateCache: [String: (state: String, timestamp: TimeInterval)] = [:]  // cwd -> hook state
+    private var hookStateCache: [String: HookStateEntry] = [:]  // cwd -> hook state (older hooks without a Claude pid)
+    private var hookStateByClaudePid: [pid_t: HookStateEntry] = [:]  // Claude process -> hook state
+    private var recapCache: [String: (modified: Date, summary: (text: String, date: Date)?)] = [:]  // transcript -> newest recap
+    private var lastWorkingSeen: [String: TimeInterval] = [:]  // "pid-axIndex" -> last time the title showed a spinner
     private var claudeShellCache: [pid_t: (isClaudeShell: Bool, started: Date?, script: String?)] = [:]  // child of claude -> classification
 
     private init() {}
@@ -238,6 +241,11 @@ class WindowTracker: ObservableObject {
         let activePids = Set(windows.map { $0.pid })
         workstreamCache = workstreamCache.filter { activePids.contains($0.key) }
         claudeShellCache = claudeShellCache.filter { cachedProcessTree[$0.key] != nil }
+        hookStateByClaudePid = hookStateByClaudePid.filter { cachedClaudePids.contains($0.key) }
+        let liveTranscripts = Set(hookStateByClaudePid.values.compactMap(\.transcriptPath))
+        recapCache = recapCache.filter { liveTranscripts.contains($0.key) }
+        let activeKeys = Set(windows.map { "\($0.pid)-\($0.axIndex)" })
+        lastWorkingSeen = lastWorkingSeen.filter { activeKeys.contains($0.key) }
 
         // Update published property on main thread
         DispatchQueue.main.async {
@@ -412,8 +420,29 @@ class WindowTracker: ObservableObject {
                 cwdToCheck = themeManager?.directoryForWorkstream(wsName)
             }
 
-            if let cwd = cwdToCheck {
-                windows[i].hookState = getHookState(forCwd: cwd)
+            let windowKey = "\(pid)-\(windows[i].axIndex)"
+            if windows[i].claudeState == .working {
+                lastWorkingSeen[windowKey] = Date().timeIntervalSince1970
+            }
+
+            // Prefer the state written by this window's own Claude process; windows sharing a
+            // directory would otherwise all show whichever session wrote last
+            let newestEntry = newestHookState(forGhosttyPid: pid)
+            if let entry = newestEntry, isHookStateValid(entry, windowKey: windowKey, now: Date().timeIntervalSince1970) {
+                windows[i].hookState = entry.state
+                windows[i].hookPrompt = entry.prompt
+            } else if let cwd = cwdToCheck, let entry = getHookState(forCwd: cwd, windowKey: windowKey) {
+                windows[i].hookState = entry.state
+            }
+
+            // Claude Code's own recap (written a few minutes after a session goes idle, or by /recap;
+            // no hook fires for either) beats the raw last reply when it's newer than the last hook
+            // state. It still applies when that state was discarded because the window showed work
+            // afterwards, which /recap itself does.
+            if windows[i].hookState != "asking", let entry = newestEntry, let path = entry.transcriptPath,
+               let summary = latestRecap(transcriptPath: path),
+               summary.date.timeIntervalSince1970 >= entry.timestamp {
+                windows[i].hookPrompt = HookPrompt(kind: .summary, text: summary.text)
             }
         }
     }
@@ -439,15 +468,29 @@ class WindowTracker: ObservableObject {
                   let timestamp = json["timestamp"] as? TimeInterval else {
                 continue
             }
+            let entry = HookStateEntry(
+                state: state,
+                timestamp: timestamp,
+                prompt: (json["prompt"] as? [String: Any]).flatMap(HookPrompt.init(json:)),
+                claudePid: (json["claude_pid"] as? Int).map { pid_t($0) },
+                transcriptPath: (json["transcript_path"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            )
+
+            if let claudePid = entry.claudePid {
+                if timestamp > hookStateByClaudePid[claudePid]?.timestamp ?? 0 {
+                    hookStateByClaudePid[claudePid] = entry
+                }
+                continue
+            }
 
             // Only update cache if this is newer than what we have
             // This keeps "asking" state until a newer state replaces it
             if let existing = hookStateCache[cwd] {
                 if timestamp > existing.timestamp {
-                    hookStateCache[cwd] = (state: state, timestamp: timestamp)
+                    hookStateCache[cwd] = entry
                 }
             } else {
-                hookStateCache[cwd] = (state: state, timestamp: timestamp)
+                hookStateCache[cwd] = entry
             }
         }
     }
@@ -457,19 +500,88 @@ class WindowTracker: ObservableObject {
     /// fires for a given session/profile - falls back to title/process detection instead.
     private let hookStateStaleness: TimeInterval = 120
 
-    private func getHookState(forCwd cwd: String) -> String? {
+    /// A hook state stays valid past the staleness window while the window hasn't worked since
+    /// the hook wrote it: we saw Claude working, then the hook fired, and nothing has happened since,
+    /// so a question left open for several minutes is still shown as one
+    ///
+    /// A per-process entry is always rewritten by its own Claude process, so it stays valid until
+    /// the window is seen working after it (e.g. a Ready recap from an hour ago, or across an app
+    /// relaunch). A directory entry can come from any session there, so it also needs to be recent.
+    private func isHookStateValid(_ entry: HookStateEntry, windowKey: String, now: TimeInterval) -> Bool {
+        // Hook timestamps are whole seconds; compare at the same resolution
+        let lastWorking = lastWorkingSeen[windowKey]
+        if let lastWorking = lastWorking, lastWorking.rounded(.down) > entry.timestamp {
+            return false
+        }
+        return entry.claudePid != nil || lastWorking != nil || now - entry.timestamp <= hookStateStaleness
+    }
+
+    /// Newest recap in a transcript: an "away_summary" (shown when you come back to an idle
+    /// session) or the output of /recap. Only the file's tail is read, and only again once it changes.
+    private func latestRecap(transcriptPath path: String) -> (text: String, date: Date)? {
+        guard let modified = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else {
+            return nil
+        }
+        if let cached = recapCache[path], cached.modified == modified {
+            return cached.summary
+        }
+
+        var summary: (text: String, date: Date)?
+        if let handle = FileHandle(forReadingAtPath: path) {
+            defer { try? handle.close() }
+            let size = (try? handle.seekToEnd()) ?? 0
+            try? handle.seek(toOffset: size > 262_144 ? size - 262_144 : 0)
+            let data = (try? handle.readToEnd()) ?? Data()
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            for index in lines.indices.reversed() {
+                let line = lines[index]
+                // /recap output is a local_command entry right after the "/recap" command entry
+                let isAwaySummary = line.contains("\"away_summary\"")
+                let isRecapCommand = line.contains("\"local_command\"") && index > lines.startIndex &&
+                    lines[index - 1].contains("<command-name>/recap</command-name>")
+                guard isAwaySummary || isRecapCommand,
+                      let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      let content = json["content"] as? String,
+                      let date = (json["timestamp"] as? String).flatMap(formatter.date(from:)) else {
+                    continue
+                }
+                let text = content
+                    .replacingOccurrences(of: "<local-command-stdout>", with: "")
+                    .replacingOccurrences(of: "</local-command-stdout>", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                summary = (text, date)
+                break
+            }
+        }
+        recapCache[path] = (modified, summary)
+        return summary
+    }
+
+    /// Newest state from a Claude process running in this Ghostty process
+    /// (tabs share a process, so more than one can match)
+    private func newestHookState(forGhosttyPid ghosttyPid: pid_t) -> HookStateEntry? {
+        hookStateByClaudePid
+            .filter { traceToGhostty(from: $0.key) == ghosttyPid }
+            .map(\.value)
+            .max { $0.timestamp < $1.timestamp }
+    }
+
+    private func getHookState(forCwd cwd: String, windowKey: String) -> HookStateEntry? {
         let now = Date().timeIntervalSince1970
 
         // Direct match
-        if let cached = hookStateCache[cwd], now - cached.timestamp <= hookStateStaleness {
-            return cached.state
+        if let cached = hookStateCache[cwd], isHookStateValid(cached, windowKey: windowKey, now: now) {
+            return cached
         }
 
         // Try matching by subdirectory (hook might be running in a subdirectory)
         for (cachedCwd, cached) in hookStateCache {
-            guard now - cached.timestamp <= hookStateStaleness else { continue }
+            guard isHookStateValid(cached, windowKey: windowKey, now: now) else { continue }
             if cwd.hasPrefix(cachedCwd + "/") || cachedCwd.hasPrefix(cwd + "/") {
-                return cached.state
+                return cached
             }
         }
 

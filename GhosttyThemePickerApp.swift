@@ -566,6 +566,50 @@ class WindowCapture {
     }
 }
 
+/// A Claude hook state file entry (~/.claude-states/state-*.json)
+struct HookStateEntry {
+    let state: String
+    let timestamp: TimeInterval
+    let prompt: HookPrompt?
+    let claudePid: pid_t?  // Claude process that wrote it; nil for older hooks (directory only)
+    let transcriptPath: String?  // the session's transcript, for Claude Code's own recap
+}
+
+/// What Claude is asking (or, once finished, a recap of its reply), recorded by the hooks
+/// so the session sidebar can preview it
+struct HookPrompt: Equatable {
+    enum Kind: String {
+        case question    // AskUserQuestion, or a question at the end of Claude's reply
+        case permission  // permission prompt for a tool call
+        case recap       // end of Claude's last reply, for a finished session
+        case summary     // Claude Code's own recap ("away summary") of a session left idle
+    }
+
+    init(kind: Kind, text: String) {
+        self.kind = kind
+        self.text = text
+        self.options = []
+        self.moreQuestions = 0
+    }
+
+    let kind: Kind
+    let text: String
+    let options: [String]
+    let moreQuestions: Int  // AskUserQuestion can ask several questions at once
+
+    init?(json: [String: Any]) {
+        guard let kind = (json["kind"] as? String).flatMap(Kind.init(rawValue:)),
+              let text = json["text"] as? String,
+              !text.isEmpty else {
+            return nil
+        }
+        self.kind = kind
+        self.text = text
+        self.options = json["options"] as? [String] ?? []
+        self.moreQuestions = json["more"] as? Int ?? 0
+    }
+}
+
 struct GhosttyWindow: Identifiable {
     let id: Int
     let name: String              // Window title (e.g., "✳ Claude Code" or "~/Projects")
@@ -575,6 +619,7 @@ struct GhosttyWindow: Identifiable {
     var shellCwd: String?         // Current working directory of shell
     var hasClaudeProcess: Bool = false  // Whether a Claude process is running in this window
     var hookState: String?        // State from Claude Code hook ("asking" or "waiting")
+    var hookPrompt: HookPrompt?   // What Claude is asking, when the hook recorded it
     var claudeShellCommand: ClaudeShellCommand?  // Command Claude's Bash tool is running, if any
 
     /// Determine Claude's state based on window title, hook state, and process detection
@@ -2286,6 +2331,12 @@ struct MenuContent: View {
             }
         }
         .keyboardShortcut(",", modifiers: .command)
+        .onAppear {
+            // Lets the session sidebar (an AppKit panel, outside any scene) open Settings
+            SessionSidebarPanel.shared.openSettings = { [openWindow] in
+                openWindow(id: "workstreams")
+            }
+        }
 
         Button {
             themeManager.fetchThemes()
@@ -2348,6 +2399,8 @@ struct GeneralSettingsView: View {
     @ObservedObject var themeManager: ThemeManager
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage(SidebarAppearance.defaultsKey) private var sidebarAppearance = SidebarAppearance.system.rawValue
+    @AppStorage(SessionSidebarPanel.showsPromptKey) private var sidebarShowsPrompt = true
+    @State private var hooksNeedUpdate = HookInstaller.shared.hooksNeedUpdate()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2399,22 +2452,40 @@ struct GeneralSettingsView: View {
 
             Divider()
 
-            // Session Sidebar Appearance
+            // Session Sidebar
             VStack(alignment: .leading, spacing: 4) {
-                Text("Session Sidebar Appearance")
+                Text("Session Sidebar")
                     .font(.headline)
-                Picker("", selection: $sidebarAppearance) {
-                    ForEach(SidebarAppearance.allCases) { mode in
-                        Text(mode.label).tag(mode.rawValue)
+                HStack {
+                    Text("Appearance")
+                    Picker("", selection: $sidebarAppearance) {
+                        ForEach(SidebarAppearance.allCases) { mode in
+                            Text(mode.label).tag(mode.rawValue)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 240)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 240)
-                Text("System follows the macOS light/dark setting")
+                Toggle("Show Claude's question or recap", isOn: $sidebarShowsPrompt)
+                    .padding(.top, 4)
+                Text("Preview questions and permission requests under sessions that need you, and the start of Claude's reply under Ready sessions")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if sidebarShowsPrompt && hooksNeedUpdate {
+                    HStack {
+                        Text("Requires the latest Claude hook")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        Button("Update Hook") {
+                            try? HookInstaller.shared.installHooks()
+                            hooksNeedUpdate = HookInstaller.shared.hooksNeedUpdate()
+                        }
+                        .controlSize(.small)
+                    }
+                }
             }
+            .onAppear { hooksNeedUpdate = HookInstaller.shared.hooksNeedUpdate() }
             .onChange(of: sidebarAppearance) { _ in
                 SessionSidebarPanel.shared.applyAppearance()
             }
