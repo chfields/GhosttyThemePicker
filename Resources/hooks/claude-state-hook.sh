@@ -55,12 +55,14 @@ if [ "$EVENT" != "UserPromptSubmit" ]; then
     fi
 
     if [ -n "$TEXT_CONTENT" ]; then
-        # Check for question indicators
+        # Check for question indicators in the last non-empty line, where Claude asks (matching the
+        # whole reply flags long answers that merely mention "can you" or "let me know" somewhere)
         # - Ends with ?
         # - Contains question patterns like "Would you like", "Do you want", "Should I"
-        if echo "$TEXT_CONTENT" | grep -qE '\?\s*$'; then
+        LAST_LINE=$(printf '%s\n' "$TEXT_CONTENT" | grep -E '\S' | tail -1)
+        if echo "$LAST_LINE" | grep -qE '\?\s*$'; then
             STATE="asking"
-        elif echo "$TEXT_CONTENT" | grep -qiE '(would you like|do you want|should i|shall i|can you|could you|may i|let me know|please confirm|which.*prefer|what.*like)'; then
+        elif echo "$LAST_LINE" | grep -qiE '(would you like|do you want|should i|shall i|can you|could you|may i|let me know|please confirm|which.*prefer|what.*like)'; then
             STATE="asking"
         fi
 

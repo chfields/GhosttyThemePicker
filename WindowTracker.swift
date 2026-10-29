@@ -488,13 +488,17 @@ class WindowTracker: ObservableObject {
     /// A hook state stays valid past the staleness window while the window hasn't worked since
     /// the hook wrote it: we saw Claude working, then the hook fired, and nothing has happened since,
     /// so a question left open for several minutes is still shown as one
+    ///
+    /// A per-process entry is always rewritten by its own Claude process, so it stays valid until
+    /// the window is seen working after it (e.g. a Ready recap from an hour ago, or across an app
+    /// relaunch). A directory entry can come from any session there, so it also needs to be recent.
     private func isHookStateValid(_ entry: HookStateEntry, windowKey: String, now: TimeInterval) -> Bool {
-        if now - entry.timestamp <= hookStateStaleness {
-            return true
-        }
         // Hook timestamps are whole seconds; compare at the same resolution
-        guard let lastWorking = lastWorkingSeen[windowKey] else { return false }
-        return lastWorking.rounded(.down) <= entry.timestamp
+        let lastWorking = lastWorkingSeen[windowKey]
+        if let lastWorking = lastWorking, lastWorking.rounded(.down) > entry.timestamp {
+            return false
+        }
+        return entry.claudePid != nil || lastWorking != nil || now - entry.timestamp <= hookStateStaleness
     }
 
     /// Newest valid state from a Claude process running in this Ghostty process
