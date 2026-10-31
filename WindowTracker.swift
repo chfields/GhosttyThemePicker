@@ -188,6 +188,7 @@ class WindowTracker: ObservableObject {
     private var hookStateCache: [String: HookStateEntry] = [:]  // cwd -> hook state (older hooks without a Claude pid)
     private var hookStateByClaudePid: [pid_t: HookStateEntry] = [:]  // Claude process -> hook state
     private var lastAXWindows: [pid_t: [(axIndex: Int, title: String)]] = [:]  // last successful AX listing per Ghostty process
+    private var axMissLogged: Set<pid_t> = []  // Ghostty processes whose AX miss was already logged
     private var transcriptCache: [String: (modified: Date, activity: TranscriptActivity)] = [:]  // transcript -> what its tail says
     private var lastWorkingSeen: [String: TimeInterval] = [:]  // "pid-axIndex" -> last time the title showed a spinner
     private var claudeShellCache: [pid_t: (isClaudeShell: Bool, started: Date?, script: String?)] = [:]  // child of claude -> classification
@@ -267,11 +268,13 @@ class WindowTracker: ObservableObject {
         }
 
         lastAXWindows = lastAXWindows.filter { ghosttyPids.contains($0.key) }
+        axMissLogged = axMissLogged.filter { ghosttyPids.contains($0) }
         guard !ghosttyPids.isEmpty else {
             return []
         }
 
         var windows: [GhosttyWindow] = []
+        var onScreenTitles: [pid_t: [String]]?  // the window server's view, fetched only when AX comes up empty
 
         for pid in ghosttyPids.sorted() {
             let appElement = AXUIElementCreateApplication(pid)
@@ -279,15 +282,31 @@ class WindowTracker: ObservableObject {
             var windowsRef: CFTypeRef?
             let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
 
-            guard result == .success,
-                  let axWindows = windowsRef as? [AXUIElement] else {
+            let axWindows = result == .success ? (windowsRef as? [AXUIElement]) : nil
+            let cached = lastAXWindows[pid] ?? []
+            if axWindows?.isEmpty ?? cached.isEmpty {
+                // AX shows no windows for this process (a long-running instance lost a window this way
+                // until relaunched); take any on-screen ones from the window server instead
+                if onScreenTitles == nil { onScreenTitles = loadOnScreenGhosttyTitles() }
+                let titles = onScreenTitles?[pid] ?? []
+                if !titles.isEmpty && axMissLogged.insert(pid).inserted {
+                    debugLog("AX listed no windows for Ghostty \(pid) (result \(result.rawValue)); using \(titles.count) from the window server")
+                }
+                for (index, title) in titles.enumerated() {
+                    windows.append(GhosttyWindow(id: windows.count + 1, name: title, axIndex: index + 1, pid: pid))
+                }
+                if axWindows != nil { lastAXWindows[pid] = [] }
+                continue
+            }
+            guard let axWindows = axWindows else {
                 // A busy Ghostty can fail to answer in time (kAXErrorCannotComplete); keep its last
                 // known windows rather than dropping them from the list for this refresh
-                for cached in lastAXWindows[pid] ?? [] {
+                for cached in cached {
                     windows.append(GhosttyWindow(id: windows.count + 1, name: cached.title, axIndex: cached.axIndex, pid: pid))
                 }
                 continue
             }
+            axMissLogged.remove(pid)
 
             var listed: [(axIndex: Int, title: String)] = []
             defer { lastAXWindows[pid] = listed }
@@ -314,6 +333,15 @@ class WindowTracker: ObservableObject {
         }
 
         return windows
+    }
+
+    /// Titles of on-screen normal-level Ghostty windows, per process, front to back
+    private func loadOnScreenGhosttyTitles() -> [pid_t: [String]] {
+        var titles: [pid_t: [String]] = [:]
+        for window in loadWindowsViaCGWindowList() {
+            titles[window.pid, default: []].append(window.name)
+        }
+        return titles
     }
 
     private func loadWindowsViaCGWindowList() -> [GhosttyWindow] {
