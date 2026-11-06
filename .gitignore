@@ -13,3 +13,4 @@ xcuserdata/
 # Build artifacts
 *.app
 *.dmg
+build-release/

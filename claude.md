@@ -65,11 +65,15 @@ This approach works better than `NSEvent.addLocalMonitorForEvents` because:
 
 ### 1. Build Release DMG
 ```bash
-xcodebuild -scheme GhosttyThemePicker -configuration Release -derivedDataPath build clean build
-mkdir -p /tmp/dmg-staging
-cp -r build/Build/Products/Release/GhosttyThemePicker.app /tmp/dmg-staging/
+xcodebuild -scheme GhosttyThemePicker -configuration Release -derivedDataPath build-release clean build
+rm -rf /tmp/dmg-staging && mkdir -p /tmp/dmg-staging
+cp -r build-release/Build/Products/Release/GhosttyThemePicker.app /tmp/dmg-staging/
 hdiutil create -volname "GhosttyThemePicker" -srcfolder /tmp/dmg-staging -ov -format UDZO /tmp/GhosttyThemePicker.dmg
 ```
+
+Use `build-release`, not `build`: `clean` wipes the whole derived-data folder, so cleaning `build` deletes a
+running Debug app's binary. The app keeps running, but macOS can no longer verify it, so Accessibility
+(error -25211) and window titles fail for every Ghostty opened afterwards; they show as "Window N".
 
 ### 2. Create GitHub Release
 ```bash
