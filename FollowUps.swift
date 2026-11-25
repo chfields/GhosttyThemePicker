@@ -21,27 +21,54 @@ struct FollowUp: Codable, Identifiable, Equatable {
     }
 }
 
-/// Identifies a session by what survives a relaunch (workstream, then directory), not by pid/window index
+/// Identifies a session: the exact window while it's open (its Ghostty process), then what survives
+/// a relaunch (workstream, then directory)
 struct SessionLink: Codable, Equatable {
     var workstreamName: String?
     var cwd: String?
     var label: String  // last-known name, shown while the window is closed
+    var pid: pid_t?    // Ghostty process of the linked window (each window usually has its own)
+    var axIndex: Int?  // tells windows of one process apart
 
     init(window: GhosttyWindow) {
         workstreamName = window.workstreamName
         cwd = window.shellCwd
         label = window.displayName
+        pid = window.pid
+        axIndex = window.axIndex
     }
 
-    /// The open window this link points at: workstream match first, then working directory
+    /// The open window this link points at. The linked window itself while it's open; after it closes,
+    /// a window of the same workstream, or the only window in the directory (several sessions often
+    /// share one, so a directory alone picks one only when the title still matches)
     func window(in windows: [GhosttyWindow]) -> GhosttyWindow? {
+        if let pid = pid {
+            let same = windows.filter { $0.pid == pid }
+            if let match = same.first(where: { $0.axIndex == axIndex }) ?? same.first {
+                return match
+            }
+        }
         if let ws = workstreamName, let match = windows.first(where: { $0.workstreamName == ws }) {
             return match
         }
-        if let cwd = cwd, let match = windows.first(where: { $0.shellCwd == cwd }) {
-            return match
+        if let cwd = cwd {
+            let same = windows.filter { $0.shellCwd == cwd }
+            if same.count == 1 { return same[0] }
+            let title = Self.plainTitle(label)
+            return same.first { Self.plainTitle($0.displayName) == title }
         }
         return nil
+    }
+
+    /// The label without Claude's status glyph ("✳ Fix tests" -> "Fix tests"), which changes as it works
+    var plainLabel: String { Self.plainTitle(label) }
+
+    static func plainTitle(_ title: String) -> String {
+        guard let scalar = title.unicodeScalars.first,
+              scalar == "\u{2733}" || (0x2800...0x28FF).contains(scalar.value) || (0x25A0...0x25FF).contains(scalar.value) else {
+            return title
+        }
+        return String(title.unicodeScalars.dropFirst()).trimmingCharacters(in: .whitespaces)
     }
 }
 
@@ -127,8 +154,8 @@ final class FollowUpStore: NSObject, ObservableObject, UNUserNotificationCenterD
         if let item = item(id) { scheduleReminder(for: item) }
     }
 
-    func unlink(_ id: UUID) {
-        mutate(id) { $0.link = nil }
+    func relink(_ id: UUID, to link: SessionLink?) {
+        mutate(id) { $0.link = link }
     }
 
     func delete(_ id: UUID) {
@@ -205,7 +232,7 @@ final class FollowUpStore: NSObject, ObservableObject, UNUserNotificationCenterD
             let content = UNMutableNotificationContent()
             content.title = "Follow-up"
             content.body = item.title
-            if let label = item.link?.label { content.subtitle = label }
+            if let label = item.link?.plainLabel { content.subtitle = label }
             content.sound = .default
             let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
             let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
@@ -278,6 +305,7 @@ struct FollowUpsSection: View {
                         FollowUpRow(
                             item: item,
                             window: item.link?.window(in: windows),
+                            windows: windows,
                             now: now,
                             isEditing: Binding(
                                 get: { editingID == item.id },
@@ -345,6 +373,50 @@ struct FollowUpsSection: View {
     }
 }
 
+// MARK: - Session Picker
+
+/// Menu of open sessions to link a follow-up to. Selection is `none`, `existing` (a link whose window
+/// is closed, kept as is), or an open window's pid-axIndex.
+private struct SessionPicker: View {
+    @Binding var selection: String
+    let windows: [GhosttyWindow]
+    let existing: SessionLink?
+
+    static let none = ""
+    static let existingTag = "existing"
+
+    var body: some View {
+        Picker("", selection: $selection) {
+            Text("No session").tag(Self.none)
+            if let link = existing, link.window(in: windows) == nil {
+                Text("\(link.plainLabel) (closed)").tag(Self.existingTag)
+            }
+            ForEach(windows.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending },
+                    id: \.id) { window in
+                Text(window.displayName).tag(Self.key(window))
+            }
+        }
+        .labelsHidden()
+        .help("Link to a session")
+    }
+
+    static func key(_ window: GhosttyWindow) -> String {
+        "\(window.pid)-\(window.axIndex)"
+    }
+
+    /// What to preselect for a link
+    static func selection(for link: SessionLink?, in windows: [GhosttyWindow]) -> String {
+        guard let link = link else { return none }
+        return link.window(in: windows).map(key) ?? existingTag
+    }
+
+    /// The link a selection stands for
+    static func link(for selection: String, in windows: [GhosttyWindow], existing: SessionLink?) -> SessionLink? {
+        if selection == existingTag { return existing }
+        return windows.first { key($0) == selection }.map(SessionLink.init(window:))
+    }
+}
+
 // MARK: - Composer
 
 private struct FollowUpComposer: View {
@@ -352,13 +424,9 @@ private struct FollowUpComposer: View {
     let windows: [GhosttyWindow]
 
     @State private var title = ""
-    @State private var linkKey = ""   // "" = no link, else pid-axIndex of an open window
+    @State private var linkKey = SessionPicker.none
     @State private var reminder: ReminderPreset = .none
     @FocusState private var focused: Bool
-
-    private var sortedWindows: [GhosttyWindow] {
-        windows.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -369,17 +437,7 @@ private struct FollowUpComposer: View {
                 .onExitCommand(perform: cancel)
 
             HStack(spacing: 6) {
-                Picker("", selection: $linkKey) {
-                    Text("No session").tag("")
-                    if let link = store.composeLink, link.window(in: windows) == nil {
-                        Text(link.label).tag("pending")
-                    }
-                    ForEach(sortedWindows, id: \.id) { window in
-                        Text(window.displayName).tag(key(window))
-                    }
-                }
-                .labelsHidden()
-                .help("Link to a session")
+                SessionPicker(selection: $linkKey, windows: windows, existing: store.composeLink)
 
                 Picker("", selection: $reminder) {
                     ForEach(ReminderPreset.allCases) { preset in
@@ -406,29 +464,14 @@ private struct FollowUpComposer: View {
         .onChange(of: store.composeLink) { _ in prefill() }
     }
 
-    private func key(_ window: GhosttyWindow) -> String {
-        "\(window.pid)-\(window.axIndex)"
-    }
-
     private func prefill() {
-        if let link = store.composeLink {
-            linkKey = link.window(in: windows).map(key) ?? "pending"
-        } else {
-            linkKey = ""
-        }
+        linkKey = SessionPicker.selection(for: store.composeLink, in: windows)
         SessionSidebarPanel.shared.makeKey()
         DispatchQueue.main.async { focused = true }
     }
 
     private func add() {
-        let link: SessionLink?
-        if linkKey == "pending" {
-            link = store.composeLink
-        } else if let window = windows.first(where: { key($0) == linkKey }) {
-            link = SessionLink(window: window)
-        } else {
-            link = nil
-        }
+        let link = SessionPicker.link(for: linkKey, in: windows, existing: store.composeLink)
         store.add(title: title, link: link, remindAt: reminder.date())
         title = ""
         reminder = .none
@@ -446,6 +489,7 @@ private struct FollowUpComposer: View {
 private struct FollowUpRow: View {
     let item: FollowUp
     let window: GhosttyWindow?  // the linked session, when open
+    let windows: [GhosttyWindow]
     let now: Date
     @Binding var isEditing: Bool
     let onToggle: () -> Void
@@ -453,6 +497,7 @@ private struct FollowUpRow: View {
     @ObservedObject private var store = FollowUpStore.shared
     @State private var hovering = false
     @State private var draft = ""
+    @State private var draftLink = SessionPicker.none
     @FocusState private var editFocused: Bool
 
     var body: some View {
@@ -470,16 +515,21 @@ private struct FollowUpRow: View {
                     TextField("", text: $draft)
                         .textFieldStyle(.roundedBorder)
                         .focused($editFocused)
-                        .onSubmit {
-                            store.rename(item.id, to: draft)
-                            isEditing = false
-                        }
+                        .onSubmit(saveEdit)
                         .onExitCommand { isEditing = false }
                         .onAppear {
                             draft = item.title
+                            draftLink = SessionPicker.selection(for: item.link, in: windows)
                             SessionSidebarPanel.shared.makeKey()
                             DispatchQueue.main.async { editFocused = true }
                         }
+                    HStack(spacing: 6) {
+                        SessionPicker(selection: $draftLink, windows: windows, existing: item.link)
+                        Button("Cancel") { isEditing = false }
+                        Button("Save", action: saveEdit)
+                            .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    .controlSize(.small)
                 } else {
                     HStack(spacing: 4) {
                         if item.isDue(at: now) {
@@ -492,7 +542,7 @@ private struct FollowUpRow: View {
                             .lineLimit(2)
                     }
                 }
-                if item.link != nil || item.remindAt != nil {
+                if !isEditing && (item.link != nil || item.remindAt != nil) {
                     detailLine
                 }
             }
@@ -520,7 +570,7 @@ private struct FollowUpRow: View {
     private var detailLine: some View {
         HStack(spacing: 4) {
             if let link = item.link {
-                Text("↳ \(window?.displayName ?? link.label)\(window == nil ? " (closed)" : "")")
+                Text("↳ \(window?.displayName ?? link.plainLabel)\(window == nil ? " (closed)" : "")")
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Text("· \(Self.age(of: item.createdAt, now: now))")
@@ -536,6 +586,13 @@ private struct FollowUpRow: View {
         .foregroundColor(.secondary)
     }
 
+    private func saveEdit() {
+        store.rename(item.id, to: draft)
+        let link = SessionPicker.link(for: draftLink, in: windows, existing: item.link)
+        if link != item.link { store.relink(item.id, to: link) }
+        isEditing = false
+    }
+
     @ViewBuilder
     private var menu: some View {
         Button("Edit") { isEditing = true }
@@ -549,7 +606,7 @@ private struct FollowUpRow: View {
             }
         }
         if item.link != nil {
-            Button("Unlink Session") { store.unlink(item.id) }
+            Button("Unlink Session") { store.relink(item.id, to: nil) }
         }
         Divider()
         Button("Delete", role: .destructive) { store.delete(item.id) }
