@@ -54,6 +54,8 @@ class SessionSidebarPanel: ObservableObject {
     private let width: CGFloat = 280
     private let visibleKey = "sessionSidebarVisible"
     private var didRestore = false
+    /// Ordered out because a full-screen window is frontmost; restored when it leaves full screen
+    private var hiddenForFullScreen = false
 
     private init() {
         // Float only while Ghostty (or this app) is frontmost; otherwise let other apps cover the sidebar
@@ -66,6 +68,30 @@ class SessionSidebarPanel: ObservableObject {
             self?.updateLevel(frontmost: app)
             self?.refreshActiveWindow()
         }
+        // Entering or leaving full screen switches Spaces; re-check once the animation settles
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateLevel(frontmost: NSWorkspace.shared.frontmostApplication)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                self?.updateLevel(frontmost: NSWorkspace.shared.frontmostApplication)
+            }
+        }
+    }
+
+    /// Whether the frontmost app's focused window is in macOS full screen (AXFullScreen)
+    private func frontmostWindowIsFullScreen(_ app: NSRunningApplication?) -> Bool {
+        guard let app = app, app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var focusedRef: CFTypeRef?
+        var fullScreenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedRef) == .success,
+              let focused = focusedRef,
+              AXUIElementCopyAttributeValue(focused as! AXUIElement, "AXFullScreen" as CFString, &fullScreenRef) == .success
+        else { return false }
+        return (fullScreenRef as? Bool) ?? false
     }
 
     /// Work out which Ghostty window has focus by comparing AX elements, not titles
@@ -96,8 +122,19 @@ class SessionSidebarPanel: ObservableObject {
 
     private func updateLevel(frontmost app: NSRunningApplication?) {
         guard let panel = panel, isVisible else { return }
+        // A full-screen window gets the whole display; step aside until it leaves full screen
+        if frontmostWindowIsFullScreen(app) {
+            panel.orderOut(nil)
+            hiddenForFullScreen = true
+            return
+        }
         let ownsFocus = app?.bundleIdentifier == "com.mitchellh.ghostty" ||
             app?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        if hiddenForFullScreen {
+            hiddenForFullScreen = false
+            // Back behind the active app's windows unless Ghostty owns focus (then it's raised below)
+            if !ownsFocus { panel.orderBack(nil) }
+        }
         if ownsFocus {
             panel.level = .floating
             panel.orderFrontRegardless()
@@ -142,6 +179,7 @@ class SessionSidebarPanel: ObservableObject {
 
     func hide() {
         panel?.orderOut(nil)
+        hiddenForFullScreen = false
         isVisible = false
         UserDefaults.standard.set(false, forKey: visibleKey)
     }
