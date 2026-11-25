@@ -61,6 +61,42 @@ struct WorkstreamLaunchResponse: Codable {
     let theme: String
 }
 
+struct FollowUpResponse: Codable {
+    let id: String
+    let shortId: String       // first 8 characters, accepted wherever an id is
+    let title: String
+    let createdAt: String     // ISO 8601
+    let remindAt: String?
+    let done: Bool
+    let session: String?      // linked session's name
+    let sessionOpen: Bool
+
+    init(_ item: FollowUp, windows: [GhosttyWindow]) {
+        let iso = ISO8601DateFormatter()
+        let window = item.link?.window(in: windows)
+        id = item.id.uuidString
+        shortId = String(item.id.uuidString.prefix(8)).lowercased()
+        title = item.title
+        createdAt = iso.string(from: item.createdAt)
+        remindAt = item.remindAt.map(iso.string(from:))
+        done = item.isDone
+        session = window?.displayName ?? item.link?.plainLabel
+        sessionOpen = window != nil
+    }
+}
+
+struct FollowUpsResponse: Codable {
+    let followups: [FollowUpResponse]
+}
+
+/// POST /api/followups body
+struct NewFollowUpRequest: Codable {
+    let title: String
+    let remindAt: String?     // ISO 8601
+    let claudePid: Int32?     // Claude process the request came from; links the item to its window
+    let cwd: String?          // fallback when the process can't be traced to a window
+}
+
 // MARK: - API Server
 
 class APIServer {
@@ -79,6 +115,7 @@ class APIServer {
     var workstreamsProvider: (() -> [WorkstreamResponse])?
     var launchWorkstreamHandler: ((String) -> (name: String, theme: String)?)?
     var openQuickLaunchHandler: (() -> Void)?
+    var followUpLinkResolver: ((pid_t?, String?) -> SessionLink?)?
 
     private init() {}
 
@@ -169,20 +206,42 @@ class APIServer {
         connection.start(queue: .main)
     }
 
-    private func receiveRequest(_ connection: NWConnection) {
+    /// Read until the headers and the Content-Length body are in (a client may send the body separately)
+    private func receiveRequest(_ connection: NWConnection, buffer: Data = Data()) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
+            var buffer = buffer
+            if let data = data { buffer.append(data) }
 
-            if let data = data, !data.isEmpty {
-                if let request = String(data: data, encoding: .utf8) {
+            if Self.isCompleteRequest(buffer) || ((isComplete || error != nil) && !buffer.isEmpty) {
+                if let request = String(data: buffer, encoding: .utf8) {
                     self.handleHTTPRequest(request, connection: connection)
+                } else {
+                    connection.cancel()
                 }
-            }
-
-            if isComplete || error != nil {
+            } else if isComplete || error != nil || buffer.count > 1_048_576 {
                 connection.cancel()
+            } else {
+                self.receiveRequest(connection, buffer: buffer)
             }
         }
+    }
+
+    private static func isCompleteRequest(_ data: Data) -> Bool {
+        guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)) else { return false }
+        let headers = String(decoding: data[..<headerEnd.lowerBound], as: UTF8.self)
+        let length = headers.components(separatedBy: "\r\n").lazy
+            .compactMap { line -> Int? in
+                let parts = line.split(separator: ":", maxSplits: 1)
+                guard parts.count == 2, parts[0].lowercased() == "content-length" else { return nil }
+                return Int(parts[1].trimmingCharacters(in: .whitespaces))
+            }.first ?? 0
+        return data.count - headerEnd.upperBound >= length
+    }
+
+    private static func body(of request: String) -> Data {
+        guard let range = request.range(of: "\r\n\r\n") else { return Data() }
+        return Data(request[range.upperBound...].utf8)
     }
 
     private func handleHTTPRequest(_ request: String, connection: NWConnection) {
@@ -217,6 +276,15 @@ class APIServer {
 
         case ("POST", "/api/quick-launch"):
             handleOpenQuickLaunch(connection)
+
+        case ("GET", "/api/followups"):
+            handleGetFollowUps(connection)
+
+        case ("POST", "/api/followups"):
+            handleAddFollowUp(connection, body: Self.body(of: request))
+
+        case ("POST", _) where path.hasPrefix("/api/followups/") && path.hasSuffix("/done"):
+            handleFollowUpDone(connection, id: path.components(separatedBy: "/")[safe: 3] ?? "")
 
         case ("POST", _) where path.hasPrefix("/api/workstreams/") && path.hasSuffix("/launch"):
             let workstreamId = extractWorkstreamId(from: path)
@@ -363,6 +431,43 @@ class APIServer {
         sendResponse(connection, status: 200, body: ["success": true])
     }
 
+    private func handleGetFollowUps(_ connection: NWConnection) {
+        let windows = windowDataProvider?() ?? []
+        let items = FollowUpStore.shared.openItems.map { FollowUpResponse($0, windows: windows) }
+        sendResponse(connection, status: 200, body: FollowUpsResponse(followups: items))
+    }
+
+    private func handleAddFollowUp(_ connection: NWConnection, body: Data) {
+        guard let request = try? JSONDecoder().decode(NewFollowUpRequest.self, from: body) else {
+            sendResponse(connection, status: 400, body: ErrorResponse(error: "Expected JSON {title, remindAt?, claudePid?, cwd?}"))
+            return
+        }
+        var remindAt: Date?
+        if let text = request.remindAt, !text.isEmpty {
+            guard let date = ISO8601DateFormatter().date(from: text) else {
+                sendResponse(connection, status: 400, body: ErrorResponse(error: "remindAt must be ISO 8601, e.g. 2026-11-25T15:00:00Z"))
+                return
+            }
+            remindAt = date
+        }
+        let link = followUpLinkResolver?(request.claudePid, request.cwd)
+        guard let item = FollowUpStore.shared.add(title: request.title, link: link, remindAt: remindAt) else {
+            sendResponse(connection, status: 400, body: ErrorResponse(error: "title is empty"))
+            return
+        }
+        sendResponse(connection, status: 201, body: FollowUpResponse(item, windows: windowDataProvider?() ?? []))
+    }
+
+    private func handleFollowUpDone(_ connection: NWConnection, id: String) {
+        guard let item = FollowUpStore.shared.item(matching: id) else {
+            sendResponse(connection, status: 404, body: ErrorResponse(error: "No single follow-up matches '\(id)'"))
+            return
+        }
+        FollowUpStore.shared.markDone(item.id)
+        let done = FollowUpStore.shared.item(matching: item.id.uuidString) ?? item
+        sendResponse(connection, status: 200, body: FollowUpResponse(done, windows: windowDataProvider?() ?? []))
+    }
+
     private func sendResponse<T: Encodable>(_ connection: NWConnection, status: Int, body: T) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
@@ -410,6 +515,7 @@ class APIServer {
     private func httpStatusText(_ status: Int) -> String {
         switch status {
         case 200: return "OK"
+        case 201: return "Created"
         case 204: return "No Content"
         case 400: return "Bad Request"
         case 404: return "Not Found"
@@ -417,5 +523,11 @@ class APIServer {
         case 503: return "Service Unavailable"
         default: return "Unknown"
         }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
