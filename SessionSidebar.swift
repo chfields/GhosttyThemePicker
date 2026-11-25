@@ -179,6 +179,11 @@ class SessionSidebarPanel: ObservableObject {
         return panel
     }
 
+    /// Make the panel key so a programmatically opened text field (follow-up add/edit) takes typing
+    func makeKey() {
+        panel?.makeKey()
+    }
+
     /// Pin to the left edge of the main screen, full visible height
     private func dock() {
         guard let panel = panel, let screen = NSScreen.main else { return }
@@ -300,6 +305,7 @@ struct SessionSidebarView: View {
     @ObservedObject var tracker: WindowTracker
     @ObservedObject var themeManager: ThemeManager
     @ObservedObject private var sidebar = SessionSidebarPanel.shared
+    @ObservedObject private var followUps = FollowUpStore.shared
     var onClose: () -> Void
 
     @State private var filter = ""
@@ -347,6 +353,9 @@ struct SessionSidebarView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
+                    FollowUpsSection(store: followUps, windows: tracker.ghosttyWindows, filter: filter)
+
+                    let followUpCounts = followUps.openCounts(in: tracker.ghosttyWindows)
                     ForEach(SessionGroup.allCases, id: \.self) { group in
                         let items = sessions
                             .filter { SessionGroup.of($0.claudeState) == group }
@@ -371,7 +380,9 @@ struct SessionSidebarView: View {
                                     themeColors: themeColors(for: window),
                                     since: stateSince[key(for: window)]?.since,
                                     highlight: highlight(for: window),
-                                    showsPrompt: showsPrompt
+                                    showsPrompt: showsPrompt,
+                                    followUpCount: followUpCounts[key(for: window)] ?? 0,
+                                    onAddFollowUp: { followUps.startComposing(link: SessionLink(window: window)) }
                                 ) {
                                     SessionSidebarPanel.shared.focusAndDock(window)
                                 }
@@ -415,6 +426,16 @@ struct SessionSidebarView: View {
             Text("SESSIONS")
                 .font(.headline)
             Spacer()
+            // The Follow-ups section has its own ＋; this one covers the empty case, when it's hidden
+            if followUps.openItems.isEmpty && !followUps.isComposing {
+                Button {
+                    followUps.startComposing(link: nil)
+                } label: {
+                    Image(systemName: "checklist")
+                }
+                .buttonStyle(.borderless)
+                .help("Add follow-up")
+            }
             optionsMenu
             Button(action: onClose) {
                 Image(systemName: "sidebar.left")
@@ -582,6 +603,8 @@ private struct SessionRow: View {
     let since: Date?
     let highlight: Highlight
     let showsPrompt: Bool
+    let followUpCount: Int
+    let onAddFollowUp: () -> Void
     let onFocus: () -> Void
 
     enum Highlight {
@@ -613,6 +636,16 @@ private struct SessionRow: View {
                             .font(.body.weight(.medium))
                             .lineLimit(1)
                         Spacer()
+                        if followUpCount > 0 {
+                            HStack(spacing: 1) {
+                                Image(systemName: "pin.fill")
+                                Text("\(followUpCount)")
+                                    .monospacedDigit()
+                            }
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .help("\(followUpCount) open follow-up\(followUpCount == 1 ? "" : "s")")
+                        }
                         statusBadge
                     }
                     Text(subtitle)
@@ -646,6 +679,9 @@ private struct SessionRow: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 4)
         .onHover { hovering = $0 }
+        .contextMenu {
+            Button("Add Follow-up…", action: onAddFollowUp)
+        }
     }
 
     private var backgroundColor: Color {
