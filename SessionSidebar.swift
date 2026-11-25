@@ -56,6 +56,8 @@ class SessionSidebarPanel: ObservableObject {
     private var didRestore = false
     /// Ordered out because a full-screen window is frontmost; restored when it leaves full screen
     private var hiddenForFullScreen = false
+    /// Accessibility observers on each Ghostty process, so full screen is caught as the transition starts
+    private var fullScreenObservers: [pid_t: AXObserver] = [:]
 
     private init() {
         // Float only while Ghostty (or this app) is frontmost; otherwise let other apps cover the sidebar
@@ -78,6 +80,47 @@ class SessionSidebarPanel: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 self?.updateLevel(frontmost: NSWorkspace.shared.frontmostApplication)
             }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.observeGhosttyWindows()
+        }
+    }
+
+    /// Watch Ghostty's window resizes and focus changes. A native full-screen transition resizes the
+    /// window right away, so the sidebar can step aside before the new Space slides in (no flicker).
+    private func observeGhosttyWindows() {
+        let ghostties = NSRunningApplication.runningApplications(withBundleIdentifier: "com.mitchellh.ghostty")
+        let live = Set(ghostties.map(\.processIdentifier))
+        for pid in fullScreenObservers.keys where !live.contains(pid) {
+            if let observer = fullScreenObservers.removeValue(forKey: pid) {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+            }
+        }
+        for pid in live where fullScreenObservers[pid] == nil {
+            var observer: AXObserver?
+            let callback: AXObserverCallback = { _, _, _, _ in
+                SessionSidebarPanel.shared.fullScreenMayHaveChanged()
+            }
+            guard AXObserverCreate(pid, callback, &observer) == .success, let observer = observer else { continue }
+            let appElement = AXUIElementCreateApplication(pid)
+            for name in [kAXWindowResizedNotification, kAXFocusedWindowChangedNotification] {
+                AXObserverAddNotification(observer, appElement, name as CFString, nil)
+            }
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+            fullScreenObservers[pid] = observer
+        }
+    }
+
+    /// Cheap check from AX callbacks (resizes fire constantly while dragging): only act on a change
+    fileprivate func fullScreenMayHaveChanged() {
+        guard isVisible else { return }
+        let app = NSWorkspace.shared.frontmostApplication
+        if frontmostWindowIsFullScreen(app) != hiddenForFullScreen {
+            updateLevel(frontmost: app)
         }
     }
 
@@ -170,6 +213,7 @@ class SessionSidebarPanel: ObservableObject {
         panel?.orderFrontRegardless()
         isVisible = true
         UserDefaults.standard.set(true, forKey: visibleKey)
+        observeGhosttyWindows()
         updateLevel(frontmost: NSWorkspace.shared.frontmostApplication)
 
         // Docking needs Accessibility; prompt for this exact binary if it isn't trusted
