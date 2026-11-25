@@ -54,6 +54,10 @@ class SessionSidebarPanel: ObservableObject {
     private let width: CGFloat = 280
     private let visibleKey = "sessionSidebarVisible"
     private var didRestore = false
+    /// Ordered out because a full-screen window is frontmost; restored when it leaves full screen
+    private var hiddenForFullScreen = false
+    /// Accessibility observers on each Ghostty process, so full screen is caught as the transition starts
+    private var fullScreenObservers: [pid_t: AXObserver] = [:]
 
     private init() {
         // Float only while Ghostty (or this app) is frontmost; otherwise let other apps cover the sidebar
@@ -66,6 +70,71 @@ class SessionSidebarPanel: ObservableObject {
             self?.updateLevel(frontmost: app)
             self?.refreshActiveWindow()
         }
+        // Entering or leaving full screen switches Spaces; re-check once the animation settles
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateLevel(frontmost: NSWorkspace.shared.frontmostApplication)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                self?.updateLevel(frontmost: NSWorkspace.shared.frontmostApplication)
+            }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.observeGhosttyWindows()
+        }
+    }
+
+    /// Watch Ghostty's window resizes and focus changes. A native full-screen transition resizes the
+    /// window right away, so the sidebar can step aside before the new Space slides in (no flicker).
+    private func observeGhosttyWindows() {
+        let ghostties = NSRunningApplication.runningApplications(withBundleIdentifier: "com.mitchellh.ghostty")
+        let live = Set(ghostties.map(\.processIdentifier))
+        for pid in fullScreenObservers.keys where !live.contains(pid) {
+            if let observer = fullScreenObservers.removeValue(forKey: pid) {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+            }
+        }
+        for pid in live where fullScreenObservers[pid] == nil {
+            var observer: AXObserver?
+            let callback: AXObserverCallback = { _, _, _, _ in
+                SessionSidebarPanel.shared.fullScreenMayHaveChanged()
+            }
+            guard AXObserverCreate(pid, callback, &observer) == .success, let observer = observer else { continue }
+            let appElement = AXUIElementCreateApplication(pid)
+            for name in [kAXWindowResizedNotification, kAXFocusedWindowChangedNotification] {
+                AXObserverAddNotification(observer, appElement, name as CFString, nil)
+            }
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+            fullScreenObservers[pid] = observer
+        }
+    }
+
+    /// Cheap check from AX callbacks (resizes fire constantly while dragging): only act on a change
+    fileprivate func fullScreenMayHaveChanged() {
+        guard isVisible else { return }
+        let app = NSWorkspace.shared.frontmostApplication
+        if frontmostWindowIsFullScreen(app) != hiddenForFullScreen {
+            updateLevel(frontmost: app)
+        }
+    }
+
+    /// Whether the frontmost app's focused window is in macOS full screen (AXFullScreen)
+    private func frontmostWindowIsFullScreen(_ app: NSRunningApplication?) -> Bool {
+        guard let app = app, app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var focusedRef: CFTypeRef?
+        var fullScreenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedRef) == .success,
+              let focused = focusedRef,
+              AXUIElementCopyAttributeValue(focused as! AXUIElement, "AXFullScreen" as CFString, &fullScreenRef) == .success
+        else { return false }
+        return (fullScreenRef as? Bool) ?? false
     }
 
     /// Work out which Ghostty window has focus by comparing AX elements, not titles
@@ -96,8 +165,19 @@ class SessionSidebarPanel: ObservableObject {
 
     private func updateLevel(frontmost app: NSRunningApplication?) {
         guard let panel = panel, isVisible else { return }
+        // A full-screen window gets the whole display; step aside until it leaves full screen
+        if frontmostWindowIsFullScreen(app) {
+            panel.orderOut(nil)
+            hiddenForFullScreen = true
+            return
+        }
         let ownsFocus = app?.bundleIdentifier == "com.mitchellh.ghostty" ||
             app?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        if hiddenForFullScreen {
+            hiddenForFullScreen = false
+            // Back behind the active app's windows unless Ghostty owns focus (then it's raised below)
+            if !ownsFocus { panel.orderBack(nil) }
+        }
         if ownsFocus {
             panel.level = .floating
             panel.orderFrontRegardless()
@@ -133,6 +213,7 @@ class SessionSidebarPanel: ObservableObject {
         panel?.orderFrontRegardless()
         isVisible = true
         UserDefaults.standard.set(true, forKey: visibleKey)
+        observeGhosttyWindows()
         updateLevel(frontmost: NSWorkspace.shared.frontmostApplication)
 
         // Docking needs Accessibility; prompt for this exact binary if it isn't trusted
@@ -142,6 +223,7 @@ class SessionSidebarPanel: ObservableObject {
 
     func hide() {
         panel?.orderOut(nil)
+        hiddenForFullScreen = false
         isVisible = false
         UserDefaults.standard.set(false, forKey: visibleKey)
     }
@@ -166,7 +248,8 @@ class SessionSidebarPanel: ObservableObject {
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.isMovable = false
         panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // No .fullScreenAuxiliary: the sidebar stays out of full-screen Spaces instead of covering the app
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary]
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.isReleasedWhenClosed = false
