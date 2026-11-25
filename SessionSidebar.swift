@@ -166,7 +166,8 @@ class SessionSidebarPanel: ObservableObject {
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.isMovable = false
         panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // No .fullScreenAuxiliary: the sidebar stays out of full-screen Spaces instead of covering the app
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary]
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.isReleasedWhenClosed = false
