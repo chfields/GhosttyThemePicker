@@ -801,6 +801,45 @@ class WindowTracker: ObservableObject {
         return false
     }
 
+    /// Link for a follow-up added from inside a session: the window the Claude process `claudePid`
+    /// runs in, or else the window whose shell is in `cwd`, or else just the directory.
+    /// Walks the live process table, since a Claude that just started may not be cached yet.
+    func sessionLink(claudePid: pid_t?, cwd: String?) -> SessionLink? {
+        func matchesCwd(_ window: GhosttyWindow) -> Bool {
+            guard let cwd = cwd, let shellCwd = window.shellCwd else { return false }
+            return cwd == shellCwd || cwd.hasPrefix(shellCwd + "/")
+        }
+
+        if let claudePid = claudePid {
+            var current = claudePid
+            for _ in 0..<20 {
+                guard let parent = Self.parentPid(of: current), parent > 1 else { break }
+                let windows = ghosttyWindows.filter { $0.pid == parent }
+                if !windows.isEmpty {
+                    // Windows in one Ghostty process can't be told apart by pid; the directory picks one
+                    return SessionLink(window: windows.first(where: matchesCwd) ?? windows[0])
+                }
+                current = parent
+            }
+        }
+
+        // Only an unambiguous directory picks a window; several sessions often share one
+        let inCwd = ghosttyWindows.filter(matchesCwd)
+        if inCwd.count == 1 {
+            return SessionLink(window: inCwd[0])
+        }
+        guard let cwd = cwd, !cwd.isEmpty else { return nil }
+        return SessionLink(workstreamName: nil, cwd: cwd, label: (cwd as NSString).lastPathComponent)
+    }
+
+    private static func parentPid(of pid: pid_t) -> pid_t? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ppid
+    }
+
     private func traceToGhostty(from pid: pid_t) -> pid_t? {
         var current = pid
         for _ in 0..<15 {

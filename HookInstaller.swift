@@ -23,6 +23,26 @@ class HookInstaller {
     private let stateHookFilename = "claude-state-hook.sh"
     private let permissionHookFilename = "permission-hook.sh"
 
+    // Follow-up skill: the script lives with the hooks; SKILL.md goes into every Claude config dir
+    private let followUpScriptFilename = "followup.sh"
+    private let followUpSkillBundleName = "followup-SKILL.md"
+    private let followUpSkillName = "followup"
+
+    /// Claude config dirs to install the skill into: ~/.claude, plus any ~/.claude-<name> that has a
+    /// settings.json (profiles run with CLAUDE_CONFIG_DIR, which a GUI app can't read from the shell)
+    private var claudeConfigDirs: [URL] {
+        let home = fileManager.homeDirectoryForCurrentUser
+        let profiles = ((try? fileManager.contentsOfDirectory(atPath: home.path)) ?? [])
+            .filter { $0.hasPrefix(".claude-") }
+            .map { home.appendingPathComponent($0) }
+            .filter { fileManager.fileExists(atPath: $0.appendingPathComponent("settings.json").path) }
+        return [claudeDir] + profiles.sorted { $0.path < $1.path }
+    }
+
+    private func followUpSkillPath(in configDir: URL) -> URL {
+        configDir.appendingPathComponent("skills/\(followUpSkillName)/SKILL.md")
+    }
+
     /// Comment marker to identify our hooks in settings.json
     private let hookMarker = "GhosttyThemePicker"
 
@@ -49,18 +69,25 @@ class HookInstaller {
         return settingsContainHooks(settings)
     }
 
-    /// Installed but older than the scripts bundled with this app (e.g. they don't record prompts yet)
+    /// Installed but older than the files bundled with this app (e.g. hooks that don't record prompts
+    /// yet, or no follow-up skill)
     func hooksNeedUpdate() -> Bool {
         guard areHooksInstalled() else { return false }
-        return [stateHookFilename, permissionHookFilename].contains { filename in
-            guard let bundlePath = Bundle.main.path(forResource: filename, ofType: nil, inDirectory: "hooks")
-                    ?? Bundle.main.path(forResource: filename, ofType: nil) else {
-                return false
-            }
-            let installed = try? Data(contentsOf: hooksDir.appendingPathComponent(filename))
+        var installedCopies: [(bundled: String, installed: URL)] = [stateHookFilename, permissionHookFilename, followUpScriptFilename].map {
+            ($0, hooksDir.appendingPathComponent($0))
+        }
+        installedCopies += claudeConfigDirs.map { (followUpSkillBundleName, followUpSkillPath(in: $0)) }
+        return installedCopies.contains { copy in
+            guard let bundlePath = bundledPath(copy.bundled) else { return false }
+            let installed = try? Data(contentsOf: copy.installed)
             let bundled = try? Data(contentsOf: URL(fileURLWithPath: bundlePath))
             return installed != bundled
         }
+    }
+
+    private func bundledPath(_ filename: String) -> String? {
+        Bundle.main.path(forResource: filename, ofType: nil, inDirectory: "hooks")
+            ?? Bundle.main.path(forResource: filename, ofType: nil)
     }
 
     /// Install hooks and configure settings.json
@@ -71,6 +98,8 @@ class HookInstaller {
         // Copy hook scripts from app bundle
         try installHookScript(named: stateHookFilename)
         try installHookScript(named: permissionHookFilename)
+        try installHookScript(named: followUpScriptFilename)
+        try installFollowUpSkill()
 
         // Update settings.json
         try configureSettings()
@@ -90,6 +119,17 @@ class HookInstaller {
 
         if fileManager.fileExists(atPath: permissionHookPath.path) {
             try fileManager.removeItem(at: permissionHookPath)
+        }
+
+        let followUpScriptPath = hooksDir.appendingPathComponent(followUpScriptFilename)
+        if fileManager.fileExists(atPath: followUpScriptPath.path) {
+            try fileManager.removeItem(at: followUpScriptPath)
+        }
+        for configDir in claudeConfigDirs {
+            let skillDir = followUpSkillPath(in: configDir).deletingLastPathComponent()
+            if fileManager.fileExists(atPath: skillDir.path) {
+                try fileManager.removeItem(at: skillDir)
+            }
         }
 
         // Remove hooks from settings.json
@@ -115,6 +155,20 @@ class HookInstaller {
         }
 
         try installScript(from: bundlePath, filename: filename)
+    }
+
+    private func installFollowUpSkill() throws {
+        guard let bundlePath = bundledPath(followUpSkillBundleName) else {
+            throw HookInstallerError.scriptNotFoundInBundle(followUpSkillBundleName)
+        }
+        for configDir in claudeConfigDirs {
+            let dest = followUpSkillPath(in: configDir)
+            try fileManager.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: dest.path) {
+                try fileManager.removeItem(at: dest)
+            }
+            try fileManager.copyItem(atPath: bundlePath, toPath: dest.path)
+        }
     }
 
     private func installScript(from bundlePath: String, filename: String) throws {

@@ -68,6 +68,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return (name: workstream.name, theme: workstream.theme)
         }
 
+        APIServer.shared.followUpLinkResolver = { claudePid, cwd in
+            WindowTracker.shared.sessionLink(claudePid: claudePid, cwd: cwd)
+        }
+
         APIServer.shared.openQuickLaunchHandler = {
             DispatchQueue.main.async {
                 QuickLaunchPanel.shared.show(themeManager: WindowTracker.shared.themeManager)

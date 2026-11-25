@@ -73,13 +73,17 @@ Order: due items first, then by creation (oldest first). Drag-to-reorder is defe
   window (same mapping the state hook uses) and stores a `SessionLink`; falls back to `cwd`.
 - `POST /api/followups/<id>/done`
 
-### Skill (installed by `HookInstaller` into `~/.claude/skills/followup/`)
-- `followup.sh add|list|done` — walks up to the `claude` PID like `claude-state-hook.sh`, reads the port
-  from `~/.ghostty-api-port`, curls the API. Works from any shell too.
-- `SKILL.md` — when to use it ("remind me…", "add a follow-up", "what's on my follow-ups"), write
-  short titles, convert "after lunch"/"tomorrow" to times, offer (never silently add) a follow-up at
-  the end of a task, mark items done once handled.
-- Same installed/needs-update check as the hooks.
+### Skill (installed by `HookInstaller` with the hooks)
+- `~/.claude/hooks/followup.sh add|list|done`: walks up to the `claude` PID like `claude-state-hook.sh`,
+  reads the port from `~/.ghostty-api-port` (probing 49876-49885 if the file is missing), curls the API.
+  `add` takes `--in 30m|2h|1d` or `--at "YYYY-MM-DD HH:MM"`; `done` takes the short id `list` prints.
+- `skills/followup/SKILL.md` goes into `~/.claude` and every `~/.claude-<name>` dir with a settings.json
+  (profiles run with `CLAUDE_CONFIG_DIR`, which the app can't see). When to use it ("remind me…",
+  "add a follow-up", "what's on my follow-ups"), short titles, turn "after lunch"/"tomorrow" into times,
+  offer (never silently add) a follow-up at the end of a task, mark items done once handled.
+- Missing or outdated copies trip the same needs-update check as the hooks.
+- Linking: the Claude PID's Ghostty window; with no PID, the window in `cwd` only if it's the only one
+  there, else a directory-only link.
 
 ## Testing
 - Manual in the Debug build: add/edit/done/delete, link + focus, closed-window label, reopen reconnects,

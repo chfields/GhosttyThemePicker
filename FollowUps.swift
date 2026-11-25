@@ -30,6 +30,12 @@ struct SessionLink: Codable, Equatable {
     var pid: pid_t?    // Ghostty process of the linked window (each window usually has its own)
     var axIndex: Int?  // tells windows of one process apart
 
+    init(workstreamName: String?, cwd: String?, label: String) {
+        self.workstreamName = workstreamName
+        self.cwd = cwd
+        self.label = label
+    }
+
     init(window: GhosttyWindow) {
         workstreamName = window.workstreamName
         cwd = window.shellCwd
@@ -128,13 +134,30 @@ final class FollowUpStore: NSObject, ObservableObject, UNUserNotificationCenterD
 
     // MARK: Editing
 
-    func add(title: String, link: SessionLink?, remindAt: Date?) {
+    @discardableResult
+    func add(title: String, link: SessionLink?, remindAt: Date?) -> FollowUp? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
         let item = FollowUp(id: UUID(), title: trimmed, createdAt: Date(), doneAt: nil, remindAt: remindAt, link: link)
         items.append(item)
         save()
         scheduleReminder(for: item)
+        return item
+    }
+
+    /// Check an item off (unlike toggleDone, doing it twice leaves it done)
+    func markDone(_ id: UUID) {
+        guard item(id)?.isDone == false else { return }
+        toggleDone(id)
+    }
+
+    /// The item whose id is or starts with `idOrPrefix` (case-insensitive), if exactly one matches,
+    /// so the API and `followup.sh done` can take the short ids that `list` prints
+    func item(matching idOrPrefix: String) -> FollowUp? {
+        let key = idOrPrefix.lowercased()
+        guard !key.isEmpty else { return nil }
+        let matches = items.filter { $0.id.uuidString.lowercased().hasPrefix(key) }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     func rename(_ id: UUID, to title: String) {
