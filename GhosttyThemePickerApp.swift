@@ -2661,6 +2661,7 @@ struct WorkstreamsSettingsView: View {
 
 struct ClaudeHooksSettingsView: View {
     @State private var isInstalled = false
+    @State private var needsUpdate = false
     @State private var isProcessing = false
     @State private var errorMessage: String?
     @State private var successMessage: String?
@@ -2719,6 +2720,32 @@ struct ClaudeHooksSettingsView: View {
                         }
 
                         HStack(alignment: .top) {
+                            Image(systemName: "doc.text")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading) {
+                                Text("~/.claude/hooks/followup.sh")
+                                    .font(.system(.caption, design: .monospaced))
+                                Text("Adds, lists and checks off sidebar follow-ups")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        HStack(alignment: .top) {
+                            Image(systemName: "sparkles")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading) {
+                                Text("~/.claude/skills/followup/SKILL.md")
+                                    .font(.system(.caption, design: .monospaced))
+                                Text("Follow-up skill for Claude (also in each ~/.claude-* profile)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        HStack(alignment: .top) {
                             Image(systemName: "gearshape")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
@@ -2762,6 +2789,19 @@ struct ClaudeHooksSettingsView: View {
             // Action buttons
             HStack {
                 if isInstalled {
+                    if needsUpdate {
+                        Button {
+                            installHooks()
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                Text("Update Hooks")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isProcessing)
+                        .help("Installed hooks or the follow-up skill are older than this version of the app")
+                    }
                     Button {
                         uninstallHooks()
                     } label: {
@@ -2798,6 +2838,7 @@ struct ClaudeHooksSettingsView: View {
 
     private func checkInstallationStatus() {
         isInstalled = HookInstaller.shared.areHooksInstalled()
+        needsUpdate = HookInstaller.shared.hooksNeedUpdate()
     }
 
     private func installHooks() {
@@ -2811,6 +2852,7 @@ struct ClaudeHooksSettingsView: View {
                 DispatchQueue.main.async {
                     isProcessing = false
                     isInstalled = true
+                    needsUpdate = HookInstaller.shared.hooksNeedUpdate()
                     successMessage = "Hooks installed successfully. Restart Claude Code to activate."
                 }
             } catch {
